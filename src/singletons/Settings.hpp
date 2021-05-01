@@ -214,6 +214,8 @@ public:
     IntSetting timeoutStackStyle = {
         "/moderation/timeoutStackStyle",
         static_cast<int>(TimeoutStackStyle::Default)};
+    EnumSetting<Qt::KeyboardModifier> modButtonRequiredModifier = {
+        "/moderation/modButtonRequiredModifier", Qt::NoModifier};
 
     /// Highlighting
     //    BoolSetting enableHighlights = {"/highlighting/enabled", true};
