@@ -157,6 +157,8 @@ public:
         "/behaviour/autocompletion/emoteCompletionWithColon", true};
 
     FloatSetting pauseOnHoverDuration = {"/behaviour/pauseOnHoverDuration", 0};
+    BoolSetting onlyPauseOnHoverWithPauseChatModifier = {
+        "/behaviour/onlyPauseOnHoverWithPauseChatModifier", false};
     EnumSetting<Qt::KeyboardModifier> pauseChatModifier = {
         "/behaviour/pauseChatModifier", Qt::KeyboardModifier::NoModifier};
     BoolSetting autorun = {"/behaviour/autorun", false};

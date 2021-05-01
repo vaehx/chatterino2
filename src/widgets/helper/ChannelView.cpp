@@ -1217,15 +1217,27 @@ void ChannelView::leaveEvent(QEvent *)
 
 void ChannelView::mouseMoveEvent(QMouseEvent *event)
 {
-    /// Pause on hover
-    if (float pauseTime = getSettings()->pauseOnHoverDuration;
-        pauseTime > 0.001f)
+    // Let the split also handle the event
+    event->setAccepted(false);
+
+    // Pause on hover
+    if (!getSettings()->onlyPauseOnHoverWithPauseChatModifier ||
+            getSettings()->pauseChatModifier.getEnum() == Qt::NoModifier ||
+            QGuiApplication::keyboardModifiers().testFlag(getSettings()->pauseChatModifier.getEnum()))
     {
-        this->pause(PauseReason::Mouse, uint(pauseTime * 1000.f));
+        if (float pauseTime = getSettings()->pauseOnHoverDuration;
+            pauseTime > 0.001f)
+        {
+            this->pause(PauseReason::Mouse, uint(pauseTime * 1000.f));
+        }
+        else if (pauseTime < -0.5f)
+        {
+            this->pause(PauseReason::Mouse);
+        }
     }
-    else if (pauseTime < -0.5f)
+    else if (this->paused())
     {
-        this->pause(PauseReason::Mouse);
+        this->unpause(PauseReason::Mouse);
     }
 
     auto tooltipWidget = TooltipWidget::instance();

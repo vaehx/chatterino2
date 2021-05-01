@@ -201,6 +201,8 @@ void GeneralPage::initLayout(GeneralPageView &layout)
                 return fuzzyToFloat(args.value,
                                     std::numeric_limits<float>::infinity());
         });
+    layout.addCheckbox("Only pause on mouse hover when the 'Pause while holding a key' key is held",
+                       s.onlyPauseOnHoverWithPauseChatModifier);
     addKeyboardModifierSetting(layout, "Pause while holding a key",
                                s.pauseChatModifier);
     layout.addDropdown<float>(
