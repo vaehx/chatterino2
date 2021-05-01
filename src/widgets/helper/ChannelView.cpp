@@ -2042,6 +2042,13 @@ void ChannelView::handleLinkClick(QMouseEvent *event, const Link &link,
         break;
 
         case Link::UserAction: {
+            auto requiredModifier = getSettings()->modButtonRequiredModifier.getEnum();
+            if (requiredModifier != Qt::NoModifier &&
+                    !QGuiApplication::keyboardModifiers().testFlag(requiredModifier))
+            {
+                break;
+            }
+
             QString value = link.value;
 
             value.replace("{user}", layout->getMessage()->loginName)

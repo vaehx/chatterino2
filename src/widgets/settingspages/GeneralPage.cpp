@@ -557,6 +557,10 @@ void GeneralPage::initLayout(GeneralPageView &layout)
     layout.addCheckbox("FrankerFaceZ (Bot, FFZ Supporter, FFZ Developer)",
                        s.showBadgesFfz);
 
+    layout.addSubtitle("Moderation");
+    addKeyboardModifierSetting(layout, "Key required to be held to use moderation buttons",
+                               s.modButtonRequiredModifier);
+
     layout.addSubtitle("Miscellaneous");
 
     if (supportsIncognitoLinks())
