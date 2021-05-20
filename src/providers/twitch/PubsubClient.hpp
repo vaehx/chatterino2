@@ -145,6 +145,10 @@ public:
         struct {
             Signal<rapidjson::Value &> redeemed;
         } pointReward;
+
+        struct {
+            Signal<rapidjson::Value &> chant;
+        } crowdChant;
     } signals_;
 
     void listenToWhispers(std::shared_ptr<TwitchAccount> account);
@@ -156,6 +160,9 @@ public:
 
     void listenToChannelPointRewards(const QString &channelID,
                                      std::shared_ptr<TwitchAccount> account);
+
+    void listenToCrowdChants(const QString &channelID,
+                             std::shared_ptr<TwitchAccount> account);
 
     std::vector<std::unique_ptr<rapidjson::Document>> requests;
 

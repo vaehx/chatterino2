@@ -378,6 +378,33 @@ void Application::initPubsub()
         }
     });
 
+    this->twitch.pubsub->signals_.crowdChant.chant.connect([&](auto &data) {
+        QString channelId;
+        if (rj::getSafe(data, "channel_id", channelId))
+        {
+            auto chan = this->twitch.server->getChannelOrEmptyByID(channelId);
+            if (chan->isEmpty())
+            {
+                return;
+            }
+
+            auto chant = CrowdChant(data);
+
+            QString text =
+                QString("%1 started a chant")
+                    .arg(chant.user.displayName);
+
+            const auto msg = makeSystemMessage(text);
+            postToThread([chan, msg] {
+                chan->addMessage(msg);
+            });
+        }
+        else
+        {
+            qCDebug(chatterinoApp) << "Couldn't find channel id of chant";
+        }
+    });
+
     this->twitch.pubsub->start();
 
     auto RequestModerationActions = [=]() {
