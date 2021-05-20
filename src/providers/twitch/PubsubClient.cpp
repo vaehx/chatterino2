@@ -919,6 +919,24 @@ void PubSub::listenToChannelPointRewards(const QString &channelID,
     this->listenToTopic(topic, account);
 }
 
+void PubSub::listenToCrowdChants(const QString &channelID,
+                                 std::shared_ptr<TwitchAccount> account)
+{
+    static const QString topicFormat("crowd-chant-channel-v1.%1");
+    assert(!channelID.isEmpty());
+    assert(account != nullptr);
+
+    auto topic = topicFormat.arg(channelID);
+
+    if (this->isListeningToTopic(topic))
+    {
+        return;
+    }
+    qCDebug(chatterinoPubsub) << "Listen to topic" << topic;
+
+    this->listenToTopic(topic, account);
+}
+
 void PubSub::listenToTopic(const QString &topic,
                            std::shared_ptr<TwitchAccount> account)
 {
@@ -1285,6 +1303,31 @@ void PubSub::handleMessageResponse(const rapidjson::Value &outerData)
         {
             qCDebug(chatterinoPubsub)
                 << "Invalid point event type:" << pointEventType.c_str();
+        }
+    }
+    else if (topic.startsWith("crowd-chant-channel-v1."))
+    {
+        std::string crowdChantType;
+        if (!rj::getSafe(msg, "type", crowdChantType))
+        {
+            qCDebug(chatterinoPubsub) << "Bad crowd chant event data";
+            return;
+        }
+
+        if (crowdChantType == "crowd-chant-created")
+        {
+            if (!rj::getSafeObject(msg, "data", msg))
+            {
+                qCDebug(chatterinoPubsub) << "No data found for crowd chant";
+                return;
+            }
+            if (!rj::getSafeObject(msg, "crowd_chant", msg))
+            {
+                qCDebug(chatterinoPubsub())
+                        << "No info found for crowd chant event";
+                return;
+            }
+            this->signals_.crowdChant.chant.invoke(msg);
         }
     }
     else

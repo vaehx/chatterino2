@@ -789,6 +789,7 @@ void TwitchChannel::refreshPubsub()
     getApp()->twitch2->pubsub->listenToChannelModerationActions(roomId,
                                                                 account);
     getApp()->twitch2->pubsub->listenToChannelPointRewards(roomId, account);
+    getApp()->twitch2->pubsub->listenToCrowdChants(roomId, account);
 }
 
 void TwitchChannel::refreshChatters()

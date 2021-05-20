@@ -8,6 +8,7 @@
 #include "common/UniqueAccess.hpp"
 #include "common/UsernameSet.hpp"
 #include "providers/twitch/ChannelPointReward.hpp"
+#include "providers/twitch/CrowdChant.hpp"
 #include "providers/twitch/TwitchEmotes.hpp"
 #include "providers/twitch/api/Helix.hpp"
 
