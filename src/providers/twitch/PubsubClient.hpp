@@ -124,6 +124,7 @@ public:
     struct {
         struct {
             Signal<ClearChatAction> chatCleared;
+            Signal<DeleteAction> messageDeleted;
             Signal<ModeChangedAction> modeChanged;
             Signal<ModerationStateAction> moderationStateChanged;
 
@@ -157,6 +158,8 @@ public:
 
     void listenToChannelModerationActions(
         const QString &channelID, std::shared_ptr<TwitchAccount> account);
+    void listenToAutomod(const QString &channelID,
+                         std::shared_ptr<TwitchAccount> account);
 
     void listenToChannelPointRewards(const QString &channelID,
                                      std::shared_ptr<TwitchAccount> account);
@@ -183,12 +186,12 @@ private:
              std::owner_less<WebsocketHandle>>
         clients;
 
-    std::unordered_map<std::string, std::function<void(const rapidjson::Value &,
-                                                       const QString &)>>
+    std::unordered_map<
+        QString, std::function<void(const rapidjson::Value &, const QString &)>>
         moderationActionHandlers;
 
-    std::unordered_map<std::string, std::function<void(const rapidjson::Value &,
-                                                       const QString &)>>
+    std::unordered_map<
+        QString, std::function<void(const rapidjson::Value &, const QString &)>>
         channelTermsActionHandlers;
 
     void onMessage(websocketpp::connection_hdl hdl, WebsocketMessagePtr msg);
