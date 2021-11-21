@@ -48,6 +48,7 @@ void TwitchIrcServer::initialize(Settings &settings, Paths &paths)
         });
     });
 
+    this->seventv.loadEmotes();
     this->bttv.loadEmotes();
     this->ffz.loadEmotes();
 }
@@ -365,6 +366,11 @@ void TwitchIrcServer::onMessageSendRequested(TwitchChannel *channel,
 
     this->sendMessage(channel->getName(), message);
     sent = true;
+}
+
+const SeventvEmotes &TwitchIrcServer::getSeventvEmotes() const
+{
+    return this->seventv;
 }
 
 const BttvEmotes &TwitchIrcServer::getBttvEmotes() const

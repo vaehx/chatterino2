@@ -206,6 +206,9 @@ SOURCES += \
     src/providers/IvrApi.cpp \
     src/providers/LinkResolver.cpp \
     src/providers/twitch/CrowdChant.cpp \
+    src/providers/seventv/SeventvBadges.cpp \
+    src/providers/seventv/SeventvEmotes.cpp \
+    src/providers/seventv/SeventvWebSocket.cpp \
     src/providers/twitch/api/Helix.cpp \
     src/providers/twitch/api/Kraken.cpp \
     src/providers/twitch/ChannelPointReward.cpp \
@@ -444,7 +447,13 @@ HEADERS += \
     src/providers/irc/IrcServer.hpp \
     src/providers/IvrApi.hpp \
     src/providers/LinkResolver.hpp \
+<<<<<<< HEAD
     src/providers/twitch/CrowdChant.hpp \
+=======
+    src/providers/seventv/SeventvBadges.hpp \
+    src/providers/seventv/SeventvEmotes.hpp \
+    src/providers/seventv/SeventvWebSocket.hpp \
+>>>>>>> seventv/chatterino7
     src/providers/twitch/api/Helix.hpp \
     src/providers/twitch/api/Kraken.hpp \
     src/providers/twitch/ChannelPointReward.hpp \
