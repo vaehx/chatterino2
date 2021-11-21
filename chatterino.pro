@@ -447,13 +447,10 @@ HEADERS += \
     src/providers/irc/IrcServer.hpp \
     src/providers/IvrApi.hpp \
     src/providers/LinkResolver.hpp \
-<<<<<<< HEAD
     src/providers/twitch/CrowdChant.hpp \
-=======
     src/providers/seventv/SeventvBadges.hpp \
     src/providers/seventv/SeventvEmotes.hpp \
     src/providers/seventv/SeventvWebSocket.hpp \
->>>>>>> seventv/chatterino7
     src/providers/twitch/api/Helix.hpp \
     src/providers/twitch/api/Kraken.hpp \
     src/providers/twitch/ChannelPointReward.hpp \
