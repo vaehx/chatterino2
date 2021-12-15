@@ -2,6 +2,7 @@
 
 ## Unversioned
 
+- Major: Added customizable shortcuts. (#2340)
 - Minor: Added middle click split to open in browser (#3356)
 - Minor: Added new search predicate to filter for messages matching a regex (#3282)
 - Minor: Add `{channel.name}`, `{channel.id}`, `{stream.game}`, `{stream.title}`, `{my.id}`, `{my.name}` placeholders for commands (#3155)
@@ -36,6 +37,8 @@
 - Minor: Made join and part message have links to usercards. (#3358)
 - Minor: Show picked outcome in prediction badges. (#3357)
 - Minor: Add support for Emoji in IRC (#3354)
+- Minor: Moved `/live` logs to its own subdirectory. (Logs from before this change will still be available in `Channels -> live`). (#3393)
+- Bugfix: Fix Split Input hotkeys not being available when input is hidden (#3362)
 - Bugfix: Fixed colored usernames sometimes not working. (#3170)
 - Bugfix: Restored ability to send duplicate `/me` messages. (#3166)
 - Bugfix: Notifications for moderators about other moderators deleting messages can now be disabled. (#3121)
@@ -58,7 +61,13 @@
 - Bugfix: Fixed IRC ACTION messages (/me) not being colorized properly. (#3341)
 - Bugfix: Fixed splits losing filters when closing and reopening them (#3351)
 - Bugfix: Fixed the first usercard being broken in `/mods` and `/vips` (#3349)
+- Bugfix: Fixed IRC colors not being applied correctly to NOTICE messages. (#3383)
 - Bugfix: Fixed Chatterino attempting to send empty messages (#3355)
+- Bugfix: Fixed IRC highlights not triggering sounds or alerts properly. (#3368)
+- Bugfix: Fixed IRC /kick command crashing if parameters were malformed. (#3382)
+- Bugfix: Fixed a crash that could occur on certain Linux systems when toggling the Always on Top flag. (#3385)
+- Bugfix: Fixed zero-width emotes sometimes wrapping lines incorrectly. (#3389)
+- Bugfix: Fixed using special chars in Windows username breaking the storage of custom commands (#3397)
 - Dev: Add GitHub action to test builds without precompiled headers enabled. (#3327)
 - Dev: Renamed CMake's build option `USE_SYSTEM_QT5KEYCHAIN` to `USE_SYSTEM_QTKEYCHAIN`. (#3103)
 - Dev: Add benchmarks that can be compiled with the `BUILD_BENCHMARKS` CMake flag. Off by default. (#3038)

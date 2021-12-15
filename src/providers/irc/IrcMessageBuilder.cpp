@@ -42,6 +42,13 @@ IrcMessageBuilder::IrcMessageBuilder(Channel *_channel,
     assert(false);
 }
 
+IrcMessageBuilder::IrcMessageBuilder(
+    const Communi::IrcNoticeMessage *_ircMessage, const MessageParseArgs &_args)
+    : SharedMessageBuilder(Channel::getEmpty().get(), _ircMessage, _args,
+                           _ircMessage->content(), false)
+{
+}
+
 MessagePtr IrcMessageBuilder::build()
 {
     // PARSE
@@ -113,7 +120,6 @@ void IrcMessageBuilder::addWords(const QStringList &words)
             continue;
         }
 
-        int pos = 0;
         int lastPos = 0;
 
         while (i.hasNext())
@@ -204,14 +210,30 @@ void IrcMessageBuilder::appendUsername()
     // The full string that will be rendered in the chat widget
     QString usernameText = username;
 
-    if (!this->action_)
+    if (this->args.isReceivedWhisper)
     {
-        usernameText += ":";
-    }
+        this->emplace<TextElement>(usernameText, MessageElementFlag::Username,
+                                   this->usernameColor_,
+                                   FontStyle::ChatMediumBold)
+            ->setLink({Link::UserWhisper, this->message().displayName});
 
-    this->emplace<TextElement>(usernameText, MessageElementFlag::Username,
-                               this->usernameColor_, FontStyle::ChatMediumBold)
-        ->setLink({Link::UserInfo, this->message().loginName});
+        // Separator
+        this->emplace<TextElement>("->", MessageElementFlag::Username,
+                                   MessageColor::System, FontStyle::ChatMedium);
+
+        this->emplace<TextElement>("you:", MessageElementFlag::Username);
+    }
+    else
+    {
+        if (!this->action_)
+        {
+            usernameText += ":";
+        }
+        this->emplace<TextElement>(usernameText, MessageElementFlag::Username,
+                                   this->usernameColor_,
+                                   FontStyle::ChatMediumBold)
+            ->setLink({Link::UserInfo, this->message().loginName});
+    }
 }
 
 }  // namespace chatterino
