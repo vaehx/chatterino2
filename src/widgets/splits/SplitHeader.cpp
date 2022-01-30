@@ -785,11 +785,19 @@ void SplitHeader::paintEvent(QPaintEvent *)
 {
     QPainter painter(this);
 
-    painter.fillRect(rect(), this->theme->splits.header.background);
-    painter.setPen(this->theme->splits.header.border);
+    QColor background = this->theme->splits.header.background;
+    QColor border = this->theme->splits.header.border;
+
+    if (this->split_->hasFocus())
+    {
+        background = this->theme->splits.header.focusedBackground;
+        border = this->theme->splits.header.focusedBorder;
+    }
+
+    painter.fillRect(rect(), background);
+    painter.setPen(border);
     painter.drawRect(0, 0, width() - 1, height() - 2);
-    painter.fillRect(0, height() - 1, width(), 1,
-                     this->theme->splits.background);
+    painter.fillRect(0, height() - 1, width(), 1, background);
 }
 
 void SplitHeader::mousePressEvent(QMouseEvent *event)
@@ -909,10 +917,21 @@ void SplitHeader::themeChangedEvent()
         this->dropdownButton_->setPixmap(getResources().buttons.menuLight);
         this->addButton_->setPixmap(getResources().buttons.addSplitDark);
     }
+
+    this->update();
 }
 
 void SplitHeader::reloadChannelEmotes()
 {
+    using namespace std::chrono_literals;
+
+    auto now = std::chrono::steady_clock::now();
+    if (this->lastReloadedChannelEmotes_ + 30s > now)
+    {
+        return;
+    }
+    this->lastReloadedChannelEmotes_ = now;
+
     auto channel = this->split_->getChannel();
 
     if (auto twitchChannel = dynamic_cast<TwitchChannel *>(channel.get()))
@@ -925,6 +944,15 @@ void SplitHeader::reloadChannelEmotes()
 
 void SplitHeader::reloadSubscriberEmotes()
 {
+    using namespace std::chrono_literals;
+
+    auto now = std::chrono::steady_clock::now();
+    if (this->lastReloadedSubEmotes_ + 30s > now)
+    {
+        return;
+    }
+    this->lastReloadedSubEmotes_ = now;
+
     auto channel = this->split_->getChannel();
     getApp()->accounts->twitch.getCurrent()->loadEmotes(channel);
 }

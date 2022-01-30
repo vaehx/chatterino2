@@ -1844,7 +1844,7 @@ void ChannelView::handleMouseClick(QMouseEvent *event,
             }
             else
             {
-                this->addContextMenuItems(hoveredElement, layout);
+                this->addContextMenuItems(hoveredElement, layout, event);
             }
         }
         break;
@@ -1861,7 +1861,8 @@ void ChannelView::handleMouseClick(QMouseEvent *event,
 }
 
 void ChannelView::addContextMenuItems(
-    const MessageLayoutElement *hoveredElement, MessageLayoutPtr layout)
+    const MessageLayoutElement *hoveredElement, MessageLayoutPtr layout,
+    QMouseEvent *event)
 {
     const auto &creator = hoveredElement->getCreator();
     auto creatorFlags = creator.getFlags();
@@ -1876,19 +1877,19 @@ void ChannelView::addContextMenuItems(
     auto menu = new QMenu;
     previousMenu = menu;
 
+    // Badge actions
     if (creatorFlags.hasAny({MessageElementFlag::Badges}))
     {
-        auto badgeElement = dynamic_cast<const BadgeElement *>(&creator);
-        addEmoteContextMenuItems(*badgeElement->getEmote(), creatorFlags,
-                                 *menu);
+        if (auto badgeElement = dynamic_cast<const BadgeElement *>(&creator))
+            addEmoteContextMenuItems(*badgeElement->getEmote(), creatorFlags,
+                                     *menu);
     }
 
     // Emote actions
     if (creatorFlags.hasAny(
             {MessageElementFlag::EmoteImages, MessageElementFlag::EmojiImage}))
     {
-        const auto emoteElement = dynamic_cast<const EmoteElement *>(&creator);
-        if (emoteElement)
+        if (auto emoteElement = dynamic_cast<const EmoteElement *>(&creator))
             addEmoteContextMenuItems(*emoteElement->getEmote(), creatorFlags,
                                      *menu);
     }
@@ -1958,11 +1959,13 @@ void ChannelView::addContextMenuItems(
             "friends",        //
             "inventory",      //
             "jobs",           //
+            "login",          //
             "messages",       //
             "payments",       //
             "profile",        //
             "security",       //
             "settings",       //
+            "signup",         //
             "subscriptions",  //
             "turbo",          //
             "videos",         //
@@ -1995,6 +1998,15 @@ void ChannelView::addContextMenuItems(
                     twitchUsername, FromTwitchLinkOpenChannelIn::Streamlink);
             });
         }
+    }
+
+    if (event->modifiers() == Qt::ShiftModifier &&
+        !layout->getMessage()->id.isEmpty())
+    {
+        menu->addAction("Copy message ID",
+                        [messageID = layout->getMessage()->id] {
+                            crossPlatformCopy(messageID);
+                        });
     }
 
     menu->popup(QCursor::pos());
@@ -2074,12 +2086,8 @@ void ChannelView::hideEvent(QHideEvent *)
 
 void ChannelView::showUserInfoPopup(const QString &userName)
 {
-    QWidget *userCardParent = this;
-#ifdef Q_OS_MACOS
-    // Order of closing/opening/killing widgets when the "Automatically close user info popups" setting is enabled is special on macOS, so user info popups should always use the main window as its parent
-    userCardParent =
+    QWidget *userCardParent =
         static_cast<QWidget *>(&(getApp()->windows->getMainWindow()));
-#endif
     auto *userPopup =
         new UserInfoPopup(getSettings()->autoCloseUserPopup, userCardParent);
     userPopup->setData(userName, this->hasSourceChannel()
