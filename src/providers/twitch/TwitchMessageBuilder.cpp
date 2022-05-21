@@ -18,6 +18,7 @@
 #include "singletons/WindowManager.hpp"
 #include "util/Helpers.hpp"
 #include "util/IrcHelpers.hpp"
+#include "util/Qt.hpp"
 #include "widgets/Window.hpp"
 
 #include <QApplication>
@@ -55,8 +56,7 @@ namespace {
         if (iterator == tags.end())
             return QStringList{};
 
-        return iterator.value().toString().split(
-            ',', QString::SplitBehavior::SkipEmptyParts);
+        return iterator.value().toString().split(',', Qt::SkipEmptyParts);
     }
 
     std::map<QString, QString> parseBadgeInfos(const QVariantMap &tags)
@@ -188,8 +188,8 @@ MessagePtr TwitchMessageBuilder::build()
     }
 
     // timestamp
-    this->emplace<TimestampElement>(
-        calculateMessageTimestamp(this->ircMessage));
+    this->message().serverReceivedTime = calculateMessageTime(this->ircMessage);
+    this->emplace<TimestampElement>(this->message().serverReceivedTime.time());
 
     if (this->shouldAddModerationElements())
     {

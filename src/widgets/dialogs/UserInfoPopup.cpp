@@ -305,6 +305,19 @@ UserInfoPopup::UserInfoPopup(bool closeAutomatically, QWidget *parent)
                                     loginName.toLower()));
                             });
 
+                        menu->addAction(
+                            "Open channel in a new tab", this, [loginName] {
+                                ChannelPtr channel =
+                                    getApp()->twitch->getOrAddChannel(
+                                        loginName);
+                                auto &nb = getApp()
+                                               ->windows->getMainWindow()
+                                               .getNotebook();
+                                SplitContainer *container = nb.addPage(true);
+                                Split *split = new Split(container);
+                                split->setChannel(channel);
+                                container->appendSplit(split);
+                            });
                         menu->popup(QCursor::pos());
                         menu->raise();
                     }
@@ -979,7 +992,6 @@ void UserInfoPopup::fetchSevenTVAvatar(const HelixUser &user)
             if (profile_picture_id.length() > 0)
             {
                 auto URI = SEVENTV_CDR_PP.arg(id, profile_picture_id);
-                this->avatarUrl_ = URI;
 
                 NetworkRequest(URI)
                     .timeout(20000)
@@ -994,7 +1006,12 @@ void UserInfoPopup::fetchSevenTVAvatar(const HelixUser &user)
                             this->getFilename(hash.result().toHex());
 
                         this->saveCacheAvatar(data, filename);
-                        this->setSevenTVAvatar(filename);
+
+                        if (this->ui_.avatarButton != nullptr)
+                        {
+                            this->avatarUrl_ = URI;
+                            this->setSevenTVAvatar(filename);
+                        }
 
                         return Success;
                     })

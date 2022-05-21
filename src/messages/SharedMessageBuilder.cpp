@@ -9,6 +9,7 @@
 #include "singletons/Settings.hpp"
 #include "singletons/WindowManager.hpp"
 #include "util/Helpers.hpp"
+#include "util/Qt.hpp"
 #include "util/StreamerMode.hpp"
 
 #include <QFileInfo>
@@ -41,8 +42,7 @@ namespace {
         if (iterator == tags.end())
             return QStringList{};
 
-        return iterator.value().toString().split(
-            ',', QString::SplitBehavior::SkipEmptyParts);
+        return iterator.value().toString().split(',', Qt::SkipEmptyParts);
     }
 
     std::vector<Badge> parseBadges(const QVariantMap &tags)
@@ -129,41 +129,6 @@ void SharedMessageBuilder::parseUsername()
 void SharedMessageBuilder::parseHighlights()
 {
     auto app = getApp();
-
-    // Highlight because it's a subscription
-    if (this->message().flags.has(MessageFlag::Subscription) &&
-        getSettings()->enableSubHighlight)
-    {
-        if (getSettings()->enableSubHighlightTaskbar)
-        {
-            this->highlightAlert_ = true;
-        }
-
-        if (getSettings()->enableSubHighlightSound)
-        {
-            this->highlightSound_ = true;
-
-            // Use custom sound if set, otherwise use fallback
-            if (!getSettings()->subHighlightSoundUrl.getValue().isEmpty())
-            {
-                this->highlightSoundUrl_ =
-                    QUrl(getSettings()->subHighlightSoundUrl.getValue());
-            }
-            else
-            {
-                this->highlightSoundUrl_ = getFallbackHighlightSound();
-            }
-        }
-
-        this->message().flags.set(MessageFlag::Highlighted);
-        this->message().highlightColor =
-            ColorProvider::instance().color(ColorType::Subscription);
-    }
-
-    // XXX: Non-common term in SharedMessageBuilder
-    auto currentUser = app->accounts->twitch.getCurrent();
-
-    QString currentUsername = currentUser->getUserName();
 
     if (getCSettings().isBlacklistedUser(this->ircMessage->nick()))
     {
@@ -258,10 +223,43 @@ void SharedMessageBuilder::parseHighlights()
         }
     }
 
+    auto currentUser = app->accounts->twitch.getCurrent();
+    QString currentUsername = currentUser->getUserName();
+
     if (this->ircMessage->nick() == currentUsername)
     {
         // Do nothing. Highlights cannot be triggered by yourself
         return;
+    }
+
+    // Highlight because it's a subscription
+    if (this->message().flags.has(MessageFlag::Subscription) &&
+        getSettings()->enableSubHighlight)
+    {
+        if (getSettings()->enableSubHighlightTaskbar)
+        {
+            this->highlightAlert_ = true;
+        }
+
+        if (getSettings()->enableSubHighlightSound)
+        {
+            this->highlightSound_ = true;
+
+            // Use custom sound if set, otherwise use fallback
+            if (!getSettings()->subHighlightSoundUrl.getValue().isEmpty())
+            {
+                this->highlightSoundUrl_ =
+                    QUrl(getSettings()->subHighlightSoundUrl.getValue());
+            }
+            else
+            {
+                this->highlightSoundUrl_ = getFallbackHighlightSound();
+            }
+        }
+
+        this->message().flags.set(MessageFlag::Highlighted);
+        this->message().highlightColor =
+            ColorProvider::instance().color(ColorType::Subscription);
     }
 
     // TODO: This vector should only be rebuilt upon highlights being changed

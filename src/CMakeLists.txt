@@ -215,12 +215,16 @@ set(SOURCE_FILES
         providers/twitch/ChannelPointReward.hpp
         providers/twitch/IrcMessageHandler.cpp
         providers/twitch/IrcMessageHandler.hpp
-        providers/twitch/PubsubActions.cpp
-        providers/twitch/PubsubActions.hpp
-        providers/twitch/PubsubClient.cpp
-        providers/twitch/PubsubClient.hpp
-        providers/twitch/PubsubHelpers.cpp
-        providers/twitch/PubsubHelpers.hpp
+        providers/twitch/PubSubActions.cpp
+        providers/twitch/PubSubActions.hpp
+        providers/twitch/PubSubClient.cpp
+        providers/twitch/PubSubClient.hpp
+        providers/twitch/PubSubClientOptions.hpp
+        providers/twitch/PubSubHelpers.hpp
+        providers/twitch/PubSubManager.cpp
+        providers/twitch/PubSubManager.hpp
+        providers/twitch/PubSubMessages.hpp
+        providers/twitch/PubSubWebsocket.hpp
         providers/twitch/TwitchAccount.cpp
         providers/twitch/TwitchAccount.hpp
         providers/twitch/TwitchAccountManager.cpp
@@ -241,6 +245,22 @@ set(SOURCE_FILES
         providers/twitch/TwitchMessageBuilder.hpp
         providers/twitch/TwitchUser.cpp
         providers/twitch/TwitchUser.hpp
+
+        providers/twitch/pubsubmessages/AutoMod.cpp
+        providers/twitch/pubsubmessages/AutoMod.hpp
+        providers/twitch/pubsubmessages/Base.cpp
+        providers/twitch/pubsubmessages/Base.hpp
+        providers/twitch/pubsubmessages/ChannelPoints.cpp
+        providers/twitch/pubsubmessages/ChannelPoints.hpp
+        providers/twitch/pubsubmessages/ChatModeratorAction.cpp
+        providers/twitch/pubsubmessages/ChatModeratorAction.hpp
+        providers/twitch/pubsubmessages/Listen.cpp
+        providers/twitch/pubsubmessages/Listen.hpp
+        providers/twitch/pubsubmessages/Message.hpp
+        providers/twitch/pubsubmessages/Unlisten.cpp
+        providers/twitch/pubsubmessages/Unlisten.hpp
+        providers/twitch/pubsubmessages/Whisper.cpp
+        providers/twitch/pubsubmessages/Whisper.hpp
 
         providers/twitch/api/Helix.cpp
         providers/twitch/api/Helix.hpp
@@ -405,6 +425,10 @@ set(SOURCE_FILES
         widgets/helper/NotebookTab.hpp
         widgets/helper/QColorPicker.cpp
         widgets/helper/QColorPicker.hpp
+        widgets/helper/RegExpItemDelegate.cpp
+        widgets/helper/RegExpItemDelegate.hpp
+        widgets/helper/TrimRegExpValidator.cpp
+        widgets/helper/TrimRegExpValidator.hpp
         widgets/helper/ResizingTextEdit.cpp
         widgets/helper/ResizingTextEdit.hpp
         widgets/helper/ScrollbarHighlight.cpp
@@ -515,6 +539,7 @@ target_link_libraries(${LIBRARY_PROJECT}
         Threads::Threads
         RapidJSON::RapidJSON
         LRUCache
+        MagicEnum
         )
 if (BUILD_WITH_QTKEYCHAIN)
     target_link_libraries(${LIBRARY_PROJECT}
@@ -631,7 +656,7 @@ if (WIN32)
 endif ()
 
 if (MSVC)
-    target_compile_options(${LIBRARY_PROJECT} PUBLIC /EHsc)
+    target_compile_options(${LIBRARY_PROJECT} PUBLIC /EHsc /bigobj)
 endif ()
 
 if (APPLE AND BUILD_APP)
@@ -664,7 +689,7 @@ if (USE_CONAN AND TARGET CONAN_PKG::boost)
 else ()
     target_link_libraries(${LIBRARY_PROJECT}
         PUBLIC
-        Boost::boost
+        ${Boost_LIBRARIES}
         )
 endif ()
 
