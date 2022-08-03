@@ -15,6 +15,7 @@ class PubSub;
 class CommandController;
 class AccountController;
 class NotificationController;
+class HighlightController;
 class HotkeyController;
 
 class Theme;
@@ -28,6 +29,7 @@ class Fonts;
 class Toasts;
 class ChatterinoBadges;
 class SeventvBadges;
+class SeventvPaints;
 class FfzBadges;
 
 class IApplication
@@ -46,6 +48,7 @@ public:
     virtual WindowManager *getWindows() = 0;
     virtual Toasts *getToasts() = 0;
     virtual CommandController *getCommands() = 0;
+    virtual HighlightController *getHighlights() = 0;
     virtual NotificationController *getNotifications() = 0;
     virtual TwitchIrcServer *getTwitch() = 0;
     virtual ChatterinoBadges *getChatterinoBadges() = 0;
@@ -81,9 +84,11 @@ public:
 
     CommandController *const commands{};
     NotificationController *const notifications{};
+    HighlightController *const highlights{};
     TwitchIrcServer *const twitch{};
     ChatterinoBadges *const chatterinoBadges{};
     SeventvBadges *const seventvBadges{};
+    SeventvPaints *const seventvPaints{};
     FfzBadges *const ffzBadges{};
 
     /*[[deprecated]]*/ Logging *const logging{};
@@ -124,6 +129,10 @@ public:
     {
         return this->notifications;
     }
+    HighlightController *getHighlights() override
+    {
+        return this->highlights;
+    }
     TwitchIrcServer *getTwitch() override
     {
         return this->twitch;
@@ -140,6 +149,7 @@ public:
 private:
     void addSingleton(Singleton *singleton);
     void initPubSub();
+    void initEventApi();
     void initNm(Paths &paths);
 
     template <typename T,

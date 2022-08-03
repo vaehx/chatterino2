@@ -25,7 +25,7 @@ class IgnorePhrase;
 class FilterRecord;
 class Nickname;
 
-/// Settings which are availlable for reading on all threads.
+/// Settings which are available for reading on all threads.
 class ConcurrentSettings
 {
 public:
@@ -98,11 +98,12 @@ public:
         "/appearance/messages/usernameDisplayMode",
         UsernameDisplayMode::UsernameAndLocalizedName};
 
-    EnumSetting<NotebookTabDirection> tabDirection = {
-        "/appearance/tabDirection", NotebookTabDirection::Horizontal};
+    EnumSetting<NotebookTabLocation> tabDirection = {"/appearance/tabDirection",
+                                                     NotebookTabLocation::Top};
 
     //    BoolSetting collapseLongMessages =
     //    {"/appearance/messages/collapseLongMessages", false};
+    BoolSetting showReplyButton = {"/appearance/showReplyButton", false};
     IntSetting collpseMessagesMinLines = {
         "/appearance/messages/collapseMessagesMinLines", 0};
     BoolSetting alternateMessages = {
@@ -116,6 +117,7 @@ public:
     BoolSetting enableSmoothScrolling = {"/appearance/smoothScrolling", true};
     BoolSetting enableSmoothScrollingNewMessages = {
         "/appearance/smoothScrollingNewMessages", false};
+    BoolSetting displaySevenTVPaints = {"/misc/displaySevenTVPaints", true};
     BoolSetting boldUsernames = {"/appearance/messages/boldUsernames", true};
     BoolSetting colorUsernames = {"/appearance/messages/colorUsernames", true};
     BoolSetting findAllUsernames = {"/appearance/messages/findAllUsernames",
@@ -159,6 +161,8 @@ public:
     FloatSetting mouseScrollMultiplier = {"/behaviour/mouseScrollMultiplier",
                                           1.0};
     BoolSetting autoCloseUserPopup = {"/behaviour/autoCloseUserPopup", true};
+    BoolSetting autoCloseThreadPopup = {"/behaviour/autoCloseThreadPopup",
+                                        false};
     // BoolSetting twitchSeperateWriteConnection =
     // {"/behaviour/twitchSeperateWriteConnection", false};
 
@@ -383,6 +387,8 @@ public:
     };
     BoolSetting displaySevenTVAnimatedProfile = {
         "/misc/displaySevenTVAnimatedProfile", true};
+
+    BoolSetting enableSevenTVEventApi = {"/misc/enableSevenTVEventApi", true};
 
     IntSetting emotesTooltipPreview = {"/misc/emotesTooltipPreview", 1};
     BoolSetting openLinksIncognito = {"/misc/openLinksIncognito", 0};

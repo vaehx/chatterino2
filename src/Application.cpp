@@ -7,6 +7,7 @@
 #include "common/Version.hpp"
 #include "controllers/accounts/AccountController.hpp"
 #include "controllers/commands/CommandController.hpp"
+#include "controllers/highlights/HighlightController.hpp"
 #include "controllers/hotkeys/HotkeyController.hpp"
 #include "controllers/ignores/IgnoreController.hpp"
 #include "controllers/notifications/NotificationController.hpp"
@@ -19,6 +20,7 @@
 #include "providers/irc/Irc2.hpp"
 #include "providers/seventv/SeventvBadges.hpp"
 #include "providers/seventv/SeventvEmotes.hpp"
+#include "providers/seventv/SeventvPaints.hpp"
 #include "providers/twitch/PubSubManager.hpp"
 #include "providers/twitch/TwitchIrcServer.hpp"
 #include "providers/twitch/TwitchMessageBuilder.hpp"
@@ -69,9 +71,11 @@ Application::Application(Settings &_settings, Paths &_paths)
 
     , commands(&this->emplace<CommandController>())
     , notifications(&this->emplace<NotificationController>())
+    , highlights(&this->emplace<HighlightController>())
     , twitch(&this->emplace<TwitchIrcServer>())
     , chatterinoBadges(&this->emplace<ChatterinoBadges>())
     , seventvBadges(&this->emplace<SeventvBadges>())
+    , seventvPaints(&this->emplace<SeventvPaints>())
     , ffzBadges(&this->emplace<FfzBadges>())
     , logging(&this->emplace<Logging>())
 {
@@ -147,6 +151,11 @@ void Application::initialize(Settings &settings, Paths &paths)
         this->initNm(paths);
     }
     this->initPubSub();
+
+    if (settings.enableSevenTVEventApi)
+    {
+        this->initEventApi();
+    }
 }
 
 int Application::run(QApplication &qtApp)
@@ -523,6 +532,40 @@ void Application::initPubSub()
     this->accounts->twitch.currentUserChanged.connect(RequestModerationActions);
 
     RequestModerationActions();
+}
+
+void Application::initEventApi()
+{
+    this->twitch->eventApi->signals_.emoteAdded.connect([&](const auto &data) {
+        auto chan = this->twitch->getChannelOrEmpty(data.channel);
+        postToThread([chan, data] {
+            if (auto channel = dynamic_cast<TwitchChannel *>(chan.get()))
+            {
+                channel->addSeventvEmote(data);
+            }
+        });
+    });
+    this->twitch->eventApi->signals_.emoteUpdated.connect(
+        [&](const auto &data) {
+            auto chan = this->twitch->getChannelOrEmpty(data.channel);
+            postToThread([chan, data] {
+                if (auto channel = dynamic_cast<TwitchChannel *>(chan.get()))
+                {
+                    channel->updateSeventvEmote(data);
+                }
+            });
+        });
+    this->twitch->eventApi->signals_.emoteRemoved.connect(
+        [&](const auto &data) {
+            auto chan = this->twitch->getChannelOrEmpty(data.channel);
+            postToThread([chan, data] {
+                if (auto channel = dynamic_cast<TwitchChannel *>(chan.get()))
+                {
+                    channel->removeSeventvEmote(data);
+                }
+            });
+        });
+    this->twitch->eventApi->start();
 }
 
 Application *getApp()
