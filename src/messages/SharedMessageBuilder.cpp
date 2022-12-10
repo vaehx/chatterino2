@@ -19,14 +19,17 @@ namespace chatterino {
 
 namespace {
 
+    /**
+     * Gets the default sound url if the user set one,
+     * or the chatterino default ping sound if no url is set.
+     */
     QUrl getFallbackHighlightSound()
     {
         QString path = getSettings()->pathHighlightSound;
-        bool fileExists = QFileInfo::exists(path) && QFileInfo(path).isFile();
+        bool fileExists = !path.isEmpty() && QFileInfo::exists(path) &&
+                          QFileInfo(path).isFile();
 
-        // Use fallback sound when checkbox is not checked
-        // or custom file doesn't exist
-        if (getSettings()->customHighlightSound && fileExists)
+        if (fileExists)
         {
             return QUrl::fromLocalFile(path);
         }
@@ -149,7 +152,8 @@ void SharedMessageBuilder::parseHighlights()
 
     auto badges = SharedMessageBuilder::parseBadgeTag(this->tags);
     auto [highlighted, highlightResult] = getIApp()->getHighlights()->check(
-        this->args, badges, this->ircMessage->nick(), this->originalMessage_);
+        this->args, badges, this->ircMessage->nick(), this->originalMessage_,
+        this->message().flags);
 
     if (!highlighted)
     {
@@ -178,41 +182,6 @@ void SharedMessageBuilder::parseHighlights()
     if (highlightResult.showInMentions)
     {
         this->message().flags.set(MessageFlag::ShowInMentions);
-    }
-}
-
-void SharedMessageBuilder::addTextOrEmoji(EmotePtr emote)
-{
-    this->emplace<EmoteElement>(emote, MessageElementFlag::EmojiAll);
-}
-
-void SharedMessageBuilder::addTextOrEmoji(const QString &string_)
-{
-    auto string = QString(string_);
-
-    // Actually just text
-    auto linkString = this->matchLink(string);
-    auto link = Link();
-    auto &&textColor = this->textColor_;
-
-    if (linkString.isEmpty())
-    {
-        if (string.startsWith('@'))
-        {
-            this->emplace<TextElement>(string, MessageElementFlag::BoldUsername,
-                                       textColor, FontStyle::ChatMediumBold);
-            this->emplace<TextElement>(
-                string, MessageElementFlag::NonBoldUsername, textColor);
-        }
-        else
-        {
-            this->emplace<TextElement>(string, MessageElementFlag::Text,
-                                       textColor);
-        }
-    }
-    else
-    {
-        this->addLink(string, linkString);
     }
 }
 
@@ -280,4 +249,60 @@ void SharedMessageBuilder::triggerHighlights()
     }
 }
 
+QString SharedMessageBuilder::stylizeUsername(const QString &username,
+                                              const Message &message)
+{
+    auto app = getApp();
+
+    const QString &localizedName = message.localizedName;
+    bool hasLocalizedName = !localizedName.isEmpty();
+
+    // The full string that will be rendered in the chat widget
+    QString usernameText;
+
+    switch (getSettings()->usernameDisplayMode.getValue())
+    {
+        case UsernameDisplayMode::Username: {
+            usernameText = username;
+        }
+        break;
+
+        case UsernameDisplayMode::LocalizedName: {
+            if (hasLocalizedName)
+            {
+                usernameText = localizedName;
+            }
+            else
+            {
+                usernameText = username;
+            }
+        }
+        break;
+
+        default:
+        case UsernameDisplayMode::UsernameAndLocalizedName: {
+            if (hasLocalizedName)
+            {
+                usernameText = username + "(" + localizedName + ")";
+            }
+            else
+            {
+                usernameText = username;
+            }
+        }
+        break;
+    }
+
+    auto nicknames = getCSettings().nicknames.readOnly();
+
+    for (const auto &nickname : *nicknames)
+    {
+        if (nickname.match(usernameText))
+        {
+            break;
+        }
+    }
+
+    return usernameText;
+}
 }  // namespace chatterino

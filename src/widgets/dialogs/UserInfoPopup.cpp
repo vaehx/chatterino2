@@ -10,9 +10,9 @@
 #include "messages/Message.hpp"
 #include "messages/MessageBuilder.hpp"
 #include "providers/IvrApi.hpp"
+#include "providers/twitch/api/Helix.hpp"
 #include "providers/twitch/TwitchChannel.hpp"
 #include "providers/twitch/TwitchIrcServer.hpp"
-#include "providers/twitch/api/Helix.hpp"
 #include "singletons/Resources.hpp"
 #include "singletons/Settings.hpp"
 #include "singletons/Theme.hpp"
@@ -22,13 +22,13 @@
 #include "util/LayoutCreator.hpp"
 #include "util/PostToThread.hpp"
 #include "util/StreamerMode.hpp"
-#include "widgets/Label.hpp"
-#include "widgets/Scrollbar.hpp"
-#include "widgets/Window.hpp"
 #include "widgets/helper/ChannelView.hpp"
 #include "widgets/helper/EffectLabel.hpp"
 #include "widgets/helper/Line.hpp"
+#include "widgets/Label.hpp"
+#include "widgets/Scrollbar.hpp"
 #include "widgets/splits/Split.hpp"
+#include "widgets/Window.hpp"
 
 #include <QCheckBox>
 #include <QDesktopServices>
@@ -105,9 +105,13 @@ namespace {
         for (size_t i = 0; i < snapshot.size(); i++)
         {
             MessagePtr message = snapshot[i];
+
+            auto overrideFlags = boost::optional<MessageFlags>(message->flags);
+            overrideFlags->set(MessageFlag::DoNotLog);
+
             if (checkMessageUserName(userName, message))
             {
-                channelPtr->addMessage(message);
+                channelPtr->addMessage(message, overrideFlags);
             }
         }
 
@@ -124,15 +128,30 @@ namespace {
         return timeout.second * durations[timeout.first];
     }
 
+    QString hashSevenTVUrl(const QString &url)
+    {
+        QByteArray bytes;
+
+        bytes.append(url.toUtf8());
+        QByteArray hashBytes(
+            QCryptographicHash::hash(bytes, QCryptographicHash::Sha256));
+
+        return hashBytes.toHex();
+    }
+
 }  // namespace
 
 UserInfoPopup::UserInfoPopup(bool closeAutomatically, QWidget *parent,
                              Split *split)
     : DraggablePopup(closeAutomatically, parent)
     , split_(split)
+    , closeAutomatically_(closeAutomatically)
 {
+    assert(split != nullptr &&
+           "split being nullptr causes lots of bugs down the road");
     this->setWindowTitle("Usercard");
     this->setStayInScreenRect(true);
+    this->updateFocusLoss();
 
     HotkeyController::HotkeyMap actions{
         {"delete",
@@ -349,6 +368,22 @@ UserInfoPopup::UserInfoPopup(bool closeAutomatically, QWidget *parent,
 
                 this->ui_.localizedNameLabel->setVisible(false);
                 this->ui_.localizedNameCopyButton->setVisible(false);
+
+                // button to pin the window (only if we close automatically)
+                if (this->closeAutomatically_)
+                {
+                    this->ui_.pinButton = box.emplace<Button>().getElement();
+                    this->ui_.pinButton->setPixmap(
+                        getApp()->themes->buttons.pin);
+                    this->ui_.pinButton->setScaleIndependantSize(18, 18);
+                    this->ui_.pinButton->setToolTip("Pin Window");
+                    QObject::connect(this->ui_.pinButton, &Button::leftClicked,
+                                     [this]() {
+                                         this->closeAutomatically_ =
+                                             !this->closeAutomatically_;
+                                         this->updateFocusLoss();
+                                     });
+                }
             }
 
             // items on the left
@@ -494,7 +529,8 @@ UserInfoPopup::UserInfoPopup(bool closeAutomatically, QWidget *parent,
         this->ui_.noMessagesLabel->setVisible(false);
 
         this->ui_.latestMessages =
-            new ChannelView(this, this->split_, ChannelView::Context::UserCard);
+            new ChannelView(this, this->split_, ChannelView::Context::UserCard,
+                            getSettings()->scrollbackUsercardLimit);
         this->ui_.latestMessages->setMinimumSize(400, 275);
         this->ui_.latestMessages->setSizePolicy(QSizePolicy::Expanding,
                                                 QSizePolicy::Expanding);
@@ -873,6 +909,26 @@ void UserInfoPopup::updateUserData()
     this->ui_.ignoreHighlights->setEnabled(false);
 }
 
+void UserInfoPopup::updateFocusLoss()
+{
+    if (this->closeAutomatically_)
+    {
+        this->setActionOnFocusLoss(BaseWindow::Delete);
+        if (this->ui_.pinButton != nullptr)
+        {
+            this->ui_.pinButton->setPixmap(getApp()->themes->buttons.pin);
+        }
+    }
+    else
+    {
+        this->setActionOnFocusLoss(BaseWindow::Nothing);
+        if (this->ui_.pinButton != nullptr)
+        {
+            this->ui_.pinButton->setPixmap(getResources().buttons.pinEnabled);
+        }
+    }
+}
+
 void UserInfoPopup::loadAvatar(const HelixUser &user)
 {
     auto filename =
@@ -921,57 +977,57 @@ void UserInfoPopup::loadAvatar(const HelixUser &user)
 
 void UserInfoPopup::loadSevenTVAvatar(const HelixUser &user)
 {
-    NetworkRequest(SEVENTV_USER_API.arg(user.login))
+    NetworkRequest(SEVENTV_USER_API.arg(user.id))
         .timeout(20000)
-        .header("Content-Type", "application/json")
         .onSuccess([this, hack = std::weak_ptr<bool>(this->lifetimeHack_)](
-                       NetworkResult result) -> Outcome {
+                       const NetworkResult &result) -> Outcome {
             if (!hack.lock())
             {
                 return Success;
             }
 
             auto root = result.parseJson();
-            auto id = root.value(QStringLiteral("id")).toString();
-            auto profile_picture_id =
-                root.value(QStringLiteral("profile_picture_id")).toString();
+            auto url = root["user"].toObject()["avatar_url"].toString();
 
-            if (profile_picture_id.length() == 0)
+            if (url.isEmpty())
             {
                 return Success;
             }
+            url.prepend("https:");
 
-            auto URI = SEVENTV_CDR_PP.arg(id, profile_picture_id);
-            auto filename = getPaths()->cacheDirectory() + "/" + "7tv-pp-" +
-                            id + "-" + profile_picture_id;
+            // We're implementing custom caching here,
+            // because we need the cached file path.
+            auto hash = hashSevenTVUrl(url);
+            auto filename = getPaths()->cacheDirectory() + "/" + hash;
 
             QFile cacheFile(filename);
             if (cacheFile.exists())
             {
-                this->avatarUrl_ = URI;
+                this->avatarUrl_ = url;
                 this->setSevenTVAvatar(filename);
+                return Success;
             }
-            else
-            {
-                QNetworkRequest req(URI);
-                static auto manager = new QNetworkAccessManager();
-                auto *reply = manager->get(req);
 
-                QObject::connect(reply, &QNetworkReply::finished, this, [=] {
-                    if (reply->error() == QNetworkReply::NoError)
-                    {
-                        this->avatarUrl_ = URI;
-                        this->saveCacheAvatar(reply->readAll(), filename);
-                        this->setSevenTVAvatar(filename);
-                    }
-                    else
-                    {
-                        qCWarning(chatterinoSeventv)
-                            << "Error fetching Profile Picture, "
-                            << reply->error();
-                    }
-                });
-            }
+            QNetworkRequest req(url);
+
+            // We're using this manager instead of the one provided
+            // in NetworkManager, because we're on a different thread.
+            static auto *manager = new QNetworkAccessManager();
+            auto *reply = manager->get(req);
+
+            QObject::connect(reply, &QNetworkReply::finished, this, [=] {
+                if (reply->error() == QNetworkReply::NoError)
+                {
+                    this->avatarUrl_ = url;
+                    this->saveCacheAvatar(reply->readAll(), filename);
+                    this->setSevenTVAvatar(filename);
+                }
+                else
+                {
+                    qCWarning(chatterinoSeventv)
+                        << "Error fetching Profile Picture:" << reply->error();
+                }
+            });
 
             return Success;
         })
@@ -983,9 +1039,11 @@ void UserInfoPopup::setSevenTVAvatar(const QString &filename)
     auto hack = std::weak_ptr<bool>(this->lifetimeHack_);
 
     if (this->avatarDestroyed || !hack.lock())
+    {
         return;
+    }
 
-    auto movie = new QMovie(filename, {});
+    auto *movie = new QMovie(filename, {});
     if (!movie->isValid())
     {
         qCWarning(chatterinoSeventv)

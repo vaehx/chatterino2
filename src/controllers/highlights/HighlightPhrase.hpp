@@ -1,14 +1,14 @@
 #pragma once
 
 #include "providers/colors/ColorProvider.hpp"
-#include "util/RapidJsonSerializeQString.hpp"
 #include "util/RapidjsonHelpers.hpp"
+#include "util/RapidJsonSerializeQString.hpp"
 
+#include <pajlada/serialize.hpp>
 #include <QColor>
 #include <QRegularExpression>
 #include <QString>
 #include <QUrl>
-#include <pajlada/serialize.hpp>
 
 #include <memory>
 
@@ -83,6 +83,8 @@ public:
     static QColor FALLBACK_REDEEMED_HIGHLIGHT_COLOR;
     static QColor FALLBACK_SUB_COLOR;
     static QColor FALLBACK_FIRST_MESSAGE_HIGHLIGHT_COLOR;
+    static QColor FALLBACK_ELEVATED_MESSAGE_HIGHLIGHT_COLOR;
+    static QColor FALLBACK_THREAD_HIGHLIGHT_COLOR;
 
 private:
     QString pattern_;

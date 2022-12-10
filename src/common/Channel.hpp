@@ -4,11 +4,11 @@
 #include "common/FlagsEnum.hpp"
 #include "messages/LimitedQueue.hpp"
 
+#include <boost/optional.hpp>
+#include <pajlada/signals/signal.hpp>
 #include <QDate>
 #include <QString>
 #include <QTimer>
-#include <boost/optional.hpp>
-#include <pajlada/signals/signal.hpp>
 
 #include <memory>
 
@@ -16,7 +16,7 @@ namespace chatterino {
 
 struct Message;
 using MessagePtr = std::shared_ptr<const Message>;
-enum class MessageFlag : uint32_t;
+enum class MessageFlag : int64_t;
 using MessageFlags = FlagsEnum<MessageFlag>;
 
 enum class TimeoutStackStyle : int {
@@ -85,7 +85,6 @@ public:
     void fillInMissingMessages(const std::vector<MessagePtr> &messages);
 
     void addOrReplaceTimeout(MessagePtr message);
-    void addOrReplaceSevenTvEventAddRemove(MessagePtr message);
     void disableAllMessages();
     void replaceMessage(MessagePtr message, MessagePtr replacement);
     void replaceMessage(size_t index, MessagePtr replacement);

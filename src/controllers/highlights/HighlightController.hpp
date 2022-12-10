@@ -7,9 +7,9 @@
 #include "singletons/Paths.hpp"
 #include "singletons/Settings.hpp"
 
+#include <boost/optional.hpp>
 #include <QColor>
 #include <QUrl>
-#include <boost/optional.hpp>
 
 #include <functional>
 #include <memory>
@@ -142,7 +142,8 @@ struct HighlightResult {
 struct HighlightCheck {
     using Checker = std::function<boost::optional<HighlightResult>(
         const MessageParseArgs &args, const std::vector<Badge> &badges,
-        const QString &senderName, const QString &originalMessage, bool self)>;
+        const QString &senderName, const QString &originalMessage,
+        const MessageFlags &messageFlags, bool self)>;
     Checker cb;
 };
 
@@ -156,7 +157,8 @@ public:
      **/
     [[nodiscard]] std::pair<bool, HighlightResult> check(
         const MessageParseArgs &args, const std::vector<Badge> &badges,
-        const QString &senderName, const QString &originalMessage) const;
+        const QString &senderName, const QString &originalMessage,
+        const MessageFlags &messageFlags) const;
 
 private:
     /**

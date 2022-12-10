@@ -1,7 +1,5 @@
 #include "Application.hpp"
 
-#include <atomic>
-
 #include "common/Args.hpp"
 #include "common/QLogging.hpp"
 #include "common/Version.hpp"
@@ -11,6 +9,7 @@
 #include "controllers/hotkeys/HotkeyController.hpp"
 #include "controllers/ignores/IgnoreController.hpp"
 #include "controllers/notifications/NotificationController.hpp"
+#include "controllers/userdata/UserDataController.hpp"
 #include "debug/AssertInGuiThread.hpp"
 #include "messages/MessageBuilder.hpp"
 #include "providers/bttv/BttvEmotes.hpp"
@@ -20,6 +19,7 @@
 #include "providers/irc/Irc2.hpp"
 #include "providers/seventv/SeventvBadges.hpp"
 #include "providers/seventv/SeventvEmotes.hpp"
+#include "providers/seventv/SeventvEventAPI.hpp"
 #include "providers/seventv/SeventvPaints.hpp"
 #include "providers/twitch/PubSubManager.hpp"
 #include "providers/twitch/TwitchIrcServer.hpp"
@@ -39,10 +39,12 @@
 #include "util/PostToThread.hpp"
 #include "util/RapidjsonHelpers.hpp"
 #include "widgets/Notebook.hpp"
-#include "widgets/Window.hpp"
 #include "widgets/splits/Split.hpp"
+#include "widgets/Window.hpp"
 
 #include <QDesktopServices>
+
+#include <atomic>
 
 namespace chatterino {
 
@@ -74,9 +76,10 @@ Application::Application(Settings &_settings, Paths &_paths)
     , highlights(&this->emplace<HighlightController>())
     , twitch(&this->emplace<TwitchIrcServer>())
     , chatterinoBadges(&this->emplace<ChatterinoBadges>())
+    , ffzBadges(&this->emplace<FfzBadges>())
     , seventvBadges(&this->emplace<SeventvBadges>())
     , seventvPaints(&this->emplace<SeventvPaints>())
-    , ffzBadges(&this->emplace<FfzBadges>())
+    , userData(&this->emplace<UserDataController>())
     , logging(&this->emplace<Logging>())
 {
     this->instance = this;
@@ -152,10 +155,7 @@ void Application::initialize(Settings &settings, Paths &paths)
     }
     this->initPubSub();
 
-    if (settings.enableSevenTVEventApi)
-    {
-        this->initEventApi();
-    }
+    this->initSeventvEventAPI();
 }
 
 int Application::run(QApplication &qtApp)
@@ -189,7 +189,48 @@ int Application::run(QApplication &qtApp)
         this->windows->forceLayoutChannelViews();
     });
 
+    getSettings()->enableBTTVGlobalEmotes.connect(
+        [this] {
+            this->twitch->reloadBTTVGlobalEmotes();
+        },
+        false);
+    getSettings()->enableBTTVChannelEmotes.connect(
+        [this] {
+            this->twitch->reloadAllBTTVChannelEmotes();
+        },
+        false);
+    getSettings()->enableFFZGlobalEmotes.connect(
+        [this] {
+            this->twitch->reloadFFZGlobalEmotes();
+        },
+        false);
+    getSettings()->enableFFZChannelEmotes.connect(
+        [this] {
+            this->twitch->reloadAllFFZChannelEmotes();
+        },
+        false);
+    getSettings()->enableSevenTVGlobalEmotes.connect(
+        [this] {
+            this->twitch->reloadSevenTVGlobalEmotes();
+        },
+        false);
+    getSettings()->enableSevenTVChannelEmotes.connect(
+        [this] {
+            this->twitch->reloadAllSevenTVChannelEmotes();
+        },
+        false);
+
     return qtApp.exec();
+}
+
+IEmotes *Application::getEmotes()
+{
+    return this->emotes;
+}
+
+IUserDataController *Application::getUserData()
+{
+    return this->userData;
 }
 
 void Application::save()
@@ -534,38 +575,51 @@ void Application::initPubSub()
     RequestModerationActions();
 }
 
-void Application::initEventApi()
+void Application::initSeventvEventAPI()
 {
-    this->twitch->eventApi->signals_.emoteAdded.connect([&](const auto &data) {
-        auto chan = this->twitch->getChannelOrEmpty(data.channel);
-        postToThread([chan, data] {
-            if (auto channel = dynamic_cast<TwitchChannel *>(chan.get()))
-            {
-                channel->addSeventvEmote(data);
-            }
-        });
-    });
-    this->twitch->eventApi->signals_.emoteUpdated.connect(
+    if (!this->twitch->seventvEventAPI)
+    {
+        qCDebug(chatterinoSeventvEventAPI)
+            << "Skipping initialization as the EventAPI is disabled";
+        return;
+    }
+
+    this->twitch->seventvEventAPI->signals_.emoteAdded.connect(
         [&](const auto &data) {
-            auto chan = this->twitch->getChannelOrEmpty(data.channel);
-            postToThread([chan, data] {
-                if (auto channel = dynamic_cast<TwitchChannel *>(chan.get()))
-                {
-                    channel->updateSeventvEmote(data);
-                }
+            postToThread([this, data] {
+                this->twitch->forEachSeventvEmoteSet(
+                    data.emoteSetID, [data](TwitchChannel &chan) {
+                        chan.addSeventvEmote(data);
+                    });
             });
         });
-    this->twitch->eventApi->signals_.emoteRemoved.connect(
+    this->twitch->seventvEventAPI->signals_.emoteUpdated.connect(
         [&](const auto &data) {
-            auto chan = this->twitch->getChannelOrEmpty(data.channel);
-            postToThread([chan, data] {
-                if (auto channel = dynamic_cast<TwitchChannel *>(chan.get()))
-                {
-                    channel->removeSeventvEmote(data);
-                }
+            postToThread([this, data] {
+                this->twitch->forEachSeventvEmoteSet(
+                    data.emoteSetID, [data](TwitchChannel &chan) {
+                        chan.updateSeventvEmote(data);
+                    });
             });
         });
-    this->twitch->eventApi->start();
+    this->twitch->seventvEventAPI->signals_.emoteRemoved.connect(
+        [&](const auto &data) {
+            postToThread([this, data] {
+                this->twitch->forEachSeventvEmoteSet(
+                    data.emoteSetID, [data](TwitchChannel &chan) {
+                        chan.removeSeventvEmote(data);
+                    });
+            });
+        });
+    this->twitch->seventvEventAPI->signals_.userUpdated.connect(
+        [&](const auto &data) {
+            this->twitch->forEachSeventvUser(data.userID,
+                                             [data](TwitchChannel &chan) {
+                                                 chan.updateSeventvUser(data);
+                                             });
+        });
+
+    this->twitch->seventvEventAPI->start();
 }
 
 Application *getApp()
