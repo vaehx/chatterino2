@@ -1,7 +1,6 @@
 #include "AbstractIrcServer.hpp"
 
 #include "common/Channel.hpp"
-#include "common/Common.hpp"
 #include "common/QLogging.hpp"
 #include "messages/LimitedQueueSnapshot.hpp"
 #include "messages/Message.hpp"
@@ -15,13 +14,28 @@ const int RECONNECT_BASE_INTERVAL = 2000;
 // 60 falloff counter means it will try to reconnect at most every 60*2 seconds
 const int MAX_FALLOFF_COUNTER = 60;
 
+// Ratelimits for joinBucket_
+const int JOIN_RATELIMIT_BUDGET = 18;
+const int JOIN_RATELIMIT_COOLDOWN = 12500;
+
 AbstractIrcServer::AbstractIrcServer()
 {
     // Initialize the connections
-    // XXX: don't create write connection if there is not separate write connection.
+    // XXX: don't create write connection if there is no separate write connection.
     this->writeConnection_.reset(new IrcConnection);
     this->writeConnection_->moveToThread(
         QCoreApplication::instance()->thread());
+
+    // Apply a leaky bucket rate limiting to JOIN messages
+    auto actuallyJoin = [&](QString message) {
+        if (!this->channels.contains(message))
+        {
+            return;
+        }
+        this->readConnection_->sendRaw("JOIN #" + message);
+    };
+    this->joinBucket_.reset(new RatelimitBucket(
+        JOIN_RATELIMIT_BUDGET, JOIN_RATELIMIT_COOLDOWN, actuallyJoin, this));
 
     QObject::connect(this->writeConnection_.get(),
                      &Communi::IrcConnection::messageReceived, this,
@@ -32,6 +46,12 @@ AbstractIrcServer::AbstractIrcServer()
                      &Communi::IrcConnection::connected, this, [this] {
                          this->onWriteConnected(this->writeConnection_.get());
                      });
+    this->connections_.managedConnect(
+        this->writeConnection_->connectionLost, [this](bool timeout) {
+            qCDebug(chatterinoIrc)
+                << "Write connection reconnect requested. Timeout:" << timeout;
+            this->writeConnection_->smartReconnect.invoke();
+        });
 
     // Listen to read connection message signals
     this->readConnection_.reset(new IrcConnection);
@@ -55,35 +75,19 @@ AbstractIrcServer::AbstractIrcServer()
                      &Communi::IrcConnection::disconnected, this, [this] {
                          this->onDisconnected();
                      });
-    QObject::connect(this->readConnection_.get(),
-                     &Communi::IrcConnection::socketError, this, [this] {
-                         this->onSocketError();
-                     });
-
-    // listen to reconnect request
-    this->readConnection_->reconnectRequested.connect([this] {
-        this->addGlobalSystemMessage(
-            "Server connection timed out, reconnecting");
-        this->connect();
-    });
-    //    this->writeConnection->reconnectRequested.connect([this] {
-    //    this->connect(); });
-    this->reconnectTimer_.setInterval(RECONNECT_BASE_INTERVAL);
-    this->reconnectTimer_.setSingleShot(true);
-    QObject::connect(&this->reconnectTimer_, &QTimer::timeout, [this] {
-        this->reconnectTimer_.setInterval(RECONNECT_BASE_INTERVAL *
-                                          this->falloffCounter_);
-
-        this->falloffCounter_ =
-            std::min(MAX_FALLOFF_COUNTER, this->falloffCounter_ + 1);
-
-        if (!this->readConnection_->isConnected())
-        {
+    this->connections_.managedConnect(
+        this->readConnection_->connectionLost, [this](bool timeout) {
             qCDebug(chatterinoIrc)
-                << "Trying to reconnect..." << this->falloffCounter_;
-            this->connect();
-        }
-    });
+                << "Read connection reconnect requested. Timeout:" << timeout;
+            if (timeout)
+            {
+                // Show additional message since this is going to interrupt a
+                // connection that is still "connected"
+                this->addGlobalSystemMessage(
+                    "Server connection timed out, reconnecting");
+            }
+            this->readConnection_->smartReconnect.invoke();
+        });
 }
 
 void AbstractIrcServer::initializeIrc()
@@ -214,26 +218,20 @@ ChannelPtr AbstractIrcServer::getOrAddChannel(const QString &dirtyChannelName)
     }
 
     this->channels.insert(channelName, chan);
-    this->connections_.emplace_back(
-        chan->destroyed.connect([this, channelName] {
-            // fourtf: issues when the server itself is destroyed
+    this->connections_.managedConnect(chan->destroyed, [this, channelName] {
+        // fourtf: issues when the server itself is destroyed
 
-            qCDebug(chatterinoIrc) << "[AbstractIrcServer::addChannel]"
-                                   << channelName << "was destroyed";
-            this->channels.remove(channelName);
+        qCDebug(chatterinoIrc) << "[AbstractIrcServer::addChannel]"
+                               << channelName << "was destroyed";
+        this->channels.remove(channelName);
 
-            if (this->readConnection_)
-            {
-                this->readConnection_->sendRaw("PART #" + channelName);
-            }
+        if (this->readConnection_)
+        {
+            this->readConnection_->sendRaw("PART #" + channelName);
+        }
+    });
 
-            if (this->writeConnection_ && this->hasSeparateWriteConnection())
-            {
-                this->writeConnection_->sendRaw("PART #" + channelName);
-            }
-        }));
-
-    // join irc channel
+    // join IRC channel
     {
         std::lock_guard<std::mutex> lock2(this->connectionMutex_);
 
@@ -241,15 +239,7 @@ ChannelPtr AbstractIrcServer::getOrAddChannel(const QString &dirtyChannelName)
         {
             if (this->readConnection_->isConnected())
             {
-                this->readConnection_->sendRaw("JOIN #" + channelName);
-            }
-        }
-
-        if (this->writeConnection_ && this->hasSeparateWriteConnection())
-        {
-            if (this->readConnection_->isConnected())
-            {
-                this->writeConnection_->sendRaw("JOIN #" + channelName);
+                this->joinBucket_->send(channelName);
             }
         }
     }
@@ -309,7 +299,7 @@ void AbstractIrcServer::onReadConnected(IrcConnection *connection)
     {
         if (auto channel = weak.lock())
         {
-            connection->sendRaw("JOIN #" + channel->getName());
+            this->joinBucket_->send(channel->getName());
         }
     }
 
@@ -336,10 +326,13 @@ void AbstractIrcServer::onReadConnected(IrcConnection *connection)
         if (replaceMessage)
         {
             chan->replaceMessage(snapshot[snapshot.size() - 1], reconnected);
-            continue;
+        }
+        else
+        {
+            chan->addMessage(connectedMsg);
         }
 
-        chan->addMessage(connectedMsg);
+        chan->connected.invoke();
     }
 
     this->falloffCounter_ = 1;
@@ -370,11 +363,6 @@ void AbstractIrcServer::onDisconnected()
     }
 }
 
-void AbstractIrcServer::onSocketError()
-{
-    this->reconnectTimer_.start();
-}
-
 std::shared_ptr<Channel> AbstractIrcServer::getCustomChannel(
     const QString &channelName)
 {
@@ -384,10 +372,8 @@ std::shared_ptr<Channel> AbstractIrcServer::getCustomChannel(
 
 QString AbstractIrcServer::cleanChannelName(const QString &dirtyChannelName)
 {
-    if (dirtyChannelName.startsWith('#'))
-        return dirtyChannelName.mid(1);
-    else
-        return dirtyChannelName;
+    // This function is a Noop only for IRC, for Twitch it removes a leading '#' and lowercases the name
+    return dirtyChannelName;
 }
 
 void AbstractIrcServer::addFakeMessage(const QString &data)

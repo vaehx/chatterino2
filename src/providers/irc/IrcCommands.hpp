@@ -2,6 +2,8 @@
 
 #include "common/Outcome.hpp"
 
+#include <QString>
+
 namespace chatterino {
 
 class IrcChannel;

@@ -4,38 +4,54 @@
 #include "common/Common.hpp"
 #include "common/Env.hpp"
 #include "common/NetworkRequest.hpp"
+#include "common/NetworkResult.hpp"
+#include "common/QLogging.hpp"
 #include "controllers/accounts/AccountController.hpp"
 #include "controllers/notifications/NotificationController.hpp"
+#include "messages/Emote.hpp"
+#include "messages/Image.hpp"
+#include "messages/Link.hpp"
 #include "messages/Message.hpp"
+#include "messages/MessageElement.hpp"
+#include "messages/MessageThread.hpp"
 #include "providers/bttv/BttvEmotes.hpp"
-#include "providers/bttv/LoadBttvChannelEmote.hpp"
-#include "providers/twitch/IrcMessageHandler.hpp"
-#include "providers/twitch/PubsubClient.hpp"
-#include "providers/twitch/TwitchCommon.hpp"
-#include "providers/twitch/TwitchMessageBuilder.hpp"
-#include "providers/twitch/TwitchParseCheerEmotes.hpp"
+#include "providers/bttv/BttvLiveUpdates.hpp"
+#include "providers/bttv/liveupdates/BttvLiveUpdateMessages.hpp"
+#include "providers/RecentMessagesApi.hpp"
+#include "providers/seventv/eventapi/Dispatch.hpp"
+#include "providers/seventv/SeventvEmotes.hpp"
+#include "providers/seventv/SeventvEventAPI.hpp"
 #include "providers/twitch/api/Helix.hpp"
-#include "providers/twitch/api/Kraken.hpp"
+#include "providers/twitch/ChannelPointReward.hpp"
+#include "providers/twitch/IrcMessageHandler.hpp"
+#include "providers/twitch/PubSubManager.hpp"
+#include "providers/twitch/TwitchAccount.hpp"
+#include "providers/twitch/TwitchCommon.hpp"
+#include "providers/twitch/TwitchIrcServer.hpp"
+#include "providers/twitch/TwitchMessageBuilder.hpp"
 #include "singletons/Emotes.hpp"
 #include "singletons/Settings.hpp"
 #include "singletons/Toasts.hpp"
 #include "singletons/WindowManager.hpp"
-#include "util/FormatTime.hpp"
 #include "util/PostToThread.hpp"
+#include "util/QStringHash.hpp"
 #include "widgets/Window.hpp"
 
-#include <rapidjson/document.h>
 #include <IrcConnection>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QThread>
 #include <QTimer>
-#include "common/QLogging.hpp"
+#include <rapidjson/document.h>
 
 namespace chatterino {
 namespace {
-    constexpr char MAGIC_MESSAGE_SUFFIX[] = u8" \U000E0000";
+#if QT_VERSION < QT_VERSION_CHECK(6, 1, 0)
+    const QString MAGIC_MESSAGE_SUFFIX = QString((const char *)u8" \U000E0000");
+#else
+    const QString MAGIC_MESSAGE_SUFFIX = QString::fromUtf8(u8" \U000E0000");
+#endif
     constexpr int TITLE_REFRESH_PERIOD = 10000;
     constexpr int CLIP_CREATION_COOLDOWN = 5000;
     const QString CLIPS_LINK("https://clips.twitch.tv/%1");
@@ -49,103 +65,11 @@ namespace {
     const QString LOGIN_PROMPT_TEXT("Click here to add your account again.");
     const Link ACCOUNTS_LINK(Link::OpenAccountsPage, QString());
 
-    // convertClearchatToNotice takes a Communi::IrcMessage that is a CLEARCHAT command and converts it to a readable NOTICE message
-    // This has historically been done in the Recent Messages API, but this functionality is being moved to Chatterino instead
-    auto convertClearchatToNotice(Communi::IrcMessage *message)
-    {
-        auto channelName = message->parameter(0);
-        QString noticeMessage{};
-        if (message->tags().contains("target-user-id"))
-        {
-            auto target = message->parameter(1);
-
-            if (message->tags().contains("ban-duration"))
-            {
-                // User was timed out
-                noticeMessage =
-                    QString("%1 has been timed out for %2.")
-                        .arg(target)
-                        .arg(formatTime(
-                            message->tag("ban-duration").toString()));
-            }
-            else
-            {
-                // User was permanently banned
-                noticeMessage =
-                    QString("%1 has been permanently banned.").arg(target);
-            }
-        }
-        else
-        {
-            // Chat was cleared
-            noticeMessage = "Chat has been cleared by a moderator.";
-        }
-
-        // rebuild the raw irc message so we can convert it back to an ircmessage again!
-        // this could probably be done in a smarter way
-
-        auto s = QString(":tmi.twitch.tv NOTICE %1 :%2")
-                     .arg(channelName)
-                     .arg(noticeMessage);
-
-        auto newMessage = Communi::IrcMessage::fromData(s.toUtf8(), nullptr);
-        newMessage->setTags(message->tags());
-
-        return newMessage;
-    }
-
-    // parseRecentMessages takes a json object and returns a vector of
-    // Communi IrcMessages
-    auto parseRecentMessages(const QJsonObject &jsonRoot, ChannelPtr channel)
-    {
-        QJsonArray jsonMessages = jsonRoot.value("messages").toArray();
-        std::vector<Communi::IrcMessage *> messages;
-
-        if (jsonMessages.empty())
-            return messages;
-
-        for (const auto jsonMessage : jsonMessages)
-        {
-            auto content = jsonMessage.toString().toUtf8();
-
-            auto message = Communi::IrcMessage::fromData(content, nullptr);
-
-            if (message->command() == "CLEARCHAT")
-            {
-                message = convertClearchatToNotice(message);
-            }
-
-            messages.emplace_back(std::move(message));
-        }
-
-        return messages;
-    }
-    std::pair<Outcome, UsernameSet> parseChatters(const QJsonObject &jsonRoot)
-    {
-        static QStringList categories = {"broadcaster", "vips",   "moderators",
-                                         "staff",       "admins", "global_mods",
-                                         "viewers"};
-
-        auto usernames = UsernameSet();
-
-        // parse json
-        QJsonObject jsonCategories = jsonRoot.value("chatters").toObject();
-
-        for (const auto &category : categories)
-        {
-            for (auto jsonCategory : jsonCategories.value(category).toArray())
-            {
-                usernames.insert(jsonCategory.toString());
-            }
-        }
-
-        return {Success, std::move(usernames)};
-    }
+    // Maximum number of chatters to fetch when refreshing chatters
+    constexpr auto MAX_CHATTERS_TO_FETCH = 5000;
 }  // namespace
 
-TwitchChannel::TwitchChannel(const QString &name,
-                             TwitchBadges &globalTwitchBadges, BttvEmotes &bttv,
-                             FfzEmotes &ffz)
+TwitchChannel::TwitchChannel(const QString &name)
     : Channel(name, Channel::Type::Twitch)
     , ChannelChatters(*static_cast<Channel *>(this))
     , nameOptions{name, name}
@@ -153,49 +77,79 @@ TwitchChannel::TwitchChannel(const QString &name,
     , channelUrl_("https://twitch.tv/" + name)
     , popoutPlayerUrl_("https://player.twitch.tv/?parent=twitch.tv&channel=" +
                        name)
-    , globalTwitchBadges_(globalTwitchBadges)
-    , globalBttv_(bttv)
-    , globalFfz_(ffz)
     , bttvEmotes_(std::make_shared<EmoteMap>())
     , ffzEmotes_(std::make_shared<EmoteMap>())
+    , seventvEmotes_(std::make_shared<EmoteMap>())
     , mod_(false)
 {
     qCDebug(chatterinoTwitch) << "[TwitchChannel" << name << "] Opened";
 
-    this->managedConnect(getApp()->accounts->twitch.currentUserChanged, [=] {
-        this->setMod(false);
-    });
+    this->bSignals_.emplace_back(
+        getApp()->accounts->twitch.currentUserChanged.connect([this] {
+            this->setMod(false);
+            this->refreshPubSub();
+        }));
 
-    // pubsub
-    this->managedConnect(getApp()->accounts->twitch.currentUserChanged, [=] {
-        this->refreshPubsub();
-    });
-    this->refreshPubsub();
+    this->refreshPubSub();
     this->userStateChanged.connect([this] {
-        this->refreshPubsub();
+        this->refreshPubSub();
     });
 
     // room id loaded -> refresh live status
     this->roomIdChanged.connect([this]() {
-        this->refreshPubsub();
+        this->refreshPubSub();
         this->refreshTitle();
         this->refreshLiveStatus();
         this->refreshBadges();
         this->refreshCheerEmotes();
         this->refreshFFZChannelEmotes(false);
         this->refreshBTTVChannelEmotes(false);
+        this->refreshSevenTVChannelEmotes(false);
+        this->joinBttvChannel();
+    });
+
+    this->connected.connect([this]() {
+        if (this->roomId().isEmpty())
+        {
+            // If we get a reconnected event when the room id is not set, we
+            // just connected for the first time. After receiving the first
+            // message from a channel, setRoomId is called and further
+            // invocations of this event will load recent messages.
+            return;
+        }
+
+        this->loadRecentMessagesReconnect();
+    });
+
+    this->messageRemovedFromStart.connect([this](MessagePtr &msg) {
+        if (msg->replyThread)
+        {
+            if (msg->replyThread->liveCount(msg) == 0)
+            {
+                this->threads_.erase(msg->replyThread->rootId());
+            }
+        }
     });
 
     // timers
-    QObject::connect(&this->chattersListTimer_, &QTimer::timeout, [=] {
+
+    QObject::connect(&this->chattersListTimer_, &QTimer::timeout, [this] {
         this->refreshChatters();
     });
+
     this->chattersListTimer_.start(5 * 60 * 1000);
 
-    QObject::connect(&this->liveStatusTimer_, &QTimer::timeout, [=] {
-        this->refreshLiveStatus();
+    QObject::connect(&this->threadClearTimer_, &QTimer::timeout, [this] {
+        // We periodically check for any dangling reply threads that missed
+        // being cleaned up on messageRemovedFromStart. This could occur if
+        // some other part of the program, like a user card, held a reference
+        // to the message.
+        //
+        // It seems difficult to actually replicate a situation where things
+        // are actually cleaned up, but I've verified that cleanups DO happen.
+        this->cleanUpReplyThreads();
     });
-    this->liveStatusTimer_.start(60 * 1000);
+    this->threadClearTimer_.start(5 * 60 * 1000);
 
     // debugging
 #if 0
@@ -203,6 +157,17 @@ TwitchChannel::TwitchChannel(const QString &name,
         this->addMessage(makeSystemMessage("asef"));
     }
 #endif
+}
+
+TwitchChannel::~TwitchChannel()
+{
+    getApp()->twitch->dropSeventvChannel(this->seventvUserID_,
+                                         this->seventvEmoteSetID_);
+
+    if (getApp()->twitch->bttvLiveUpdates)
+    {
+        getApp()->twitch->bttvLiveUpdates->partChannel(this->roomId());
+    }
 }
 
 void TwitchChannel::initialize()
@@ -244,6 +209,12 @@ void TwitchChannel::setLocalizedName(const QString &name)
 
 void TwitchChannel::refreshBTTVChannelEmotes(bool manualRefresh)
 {
+    if (!Settings::instance().enableBTTVChannelEmotes)
+    {
+        this->bttvEmotes_.set(EMPTY_EMOTE_MAP);
+        return;
+    }
+
     BttvEmotes::loadChannel(
         weakOf<Channel>(this), this->roomId(), this->getLocalizedName(),
         [this, weak = weakOf<Channel>(this)](auto &&emoteMap) {
@@ -256,6 +227,12 @@ void TwitchChannel::refreshBTTVChannelEmotes(bool manualRefresh)
 
 void TwitchChannel::refreshFFZChannelEmotes(bool manualRefresh)
 {
+    if (!Settings::instance().enableFFZChannelEmotes)
+    {
+        this->ffzEmotes_.set(EMPTY_EMOTE_MAP);
+        return;
+    }
+
     FfzEmotes::loadChannel(
         weakOf<Channel>(this), this->roomId(),
         [this, weak = weakOf<Channel>(this)](auto &&emoteMap) {
@@ -278,31 +255,70 @@ void TwitchChannel::refreshFFZChannelEmotes(bool manualRefresh)
         manualRefresh);
 }
 
+void TwitchChannel::refreshSevenTVChannelEmotes(bool manualRefresh)
+{
+    if (!Settings::instance().enableSevenTVChannelEmotes)
+    {
+        this->seventvEmotes_.set(EMPTY_EMOTE_MAP);
+        return;
+    }
+
+    SeventvEmotes::loadChannelEmotes(
+        weakOf<Channel>(this), this->roomId(),
+        [this, weak = weakOf<Channel>(this)](auto &&emoteMap,
+                                             auto channelInfo) {
+            if (auto shared = weak.lock())
+            {
+                this->seventvEmotes_.set(std::make_shared<EmoteMap>(
+                    std::forward<decltype(emoteMap)>(emoteMap)));
+                this->updateSeventvData(channelInfo.userID,
+                                        channelInfo.emoteSetID);
+                this->seventvUserTwitchConnectionIndex_ =
+                    channelInfo.twitchConnectionIndex;
+            }
+        },
+        manualRefresh);
+}
+
 void TwitchChannel::addChannelPointReward(const ChannelPointReward &reward)
 {
     assertInGuiThread();
 
-    if (!reward.hasParsedSuccessfully)
-    {
-        return;
-    }
-
     if (!reward.isUserInputRequired)
     {
         MessageBuilder builder;
-        TwitchMessageBuilder::appendChannelPointRewardMessage(reward, &builder);
+        TwitchMessageBuilder::appendChannelPointRewardMessage(
+            reward, &builder, this->isMod(), this->isBroadcaster());
         this->addMessage(builder.release());
         return;
     }
 
-    bool result;
+    bool result = false;
     {
         auto channelPointRewards = this->channelPointRewards_.access();
         result = channelPointRewards->try_emplace(reward.id, reward).second;
     }
     if (result)
     {
-        this->channelPointRewardAdded.invoke(reward);
+        qCDebug(chatterinoTwitch)
+            << "[TwitchChannel" << this->getName()
+            << "] Channel point reward added:" << reward.id << ","
+            << reward.title << "," << reward.isUserInputRequired;
+
+        // TODO: There's an underlying bug here. This bug should be fixed.
+        // This only attempts to prevent a crash when invoking the signal.
+        try
+        {
+            this->channelPointRewardAdded.invoke(reward);
+        }
+        catch (const std::bad_function_call &)
+        {
+            qCWarning(chatterinoTwitch).nospace()
+                << "[TwitchChannel " << this->getName()
+                << "] Caught std::bad_function_call when adding channel point "
+                   "reward ChannelPointReward{ id: "
+                << reward.id << ", title: " << reward.title << " }.";
+        }
     }
 }
 
@@ -324,31 +340,41 @@ boost::optional<ChannelPointReward> TwitchChannel::channelPointReward(
     return it->second;
 }
 
-void TwitchChannel::sendMessage(const QString &message)
+void TwitchChannel::showLoginMessage()
+{
+    const auto linkColor = MessageColor(MessageColor::Link);
+    const auto accountsLink = Link(Link::OpenAccountsPage, QString());
+    const auto currentUser = getApp()->accounts->twitch.getCurrent();
+    const auto expirationText =
+        QStringLiteral("You need to log in to send messages. You can link your "
+                       "Twitch account");
+    const auto loginPromptText = QStringLiteral("in the settings.");
+
+    auto builder = MessageBuilder();
+    builder.message().flags.set(MessageFlag::System);
+    builder.message().flags.set(MessageFlag::DoNotTriggerNotification);
+
+    builder.emplace<TimestampElement>();
+    builder.emplace<TextElement>(expirationText, MessageElementFlag::Text,
+                                 MessageColor::System);
+    builder
+        .emplace<TextElement>(loginPromptText, MessageElementFlag::Text,
+                              linkColor)
+        ->setLink(accountsLink);
+
+    this->addMessage(builder.release());
+}
+
+QString TwitchChannel::prepareMessage(const QString &message) const
 {
     auto app = getApp();
-
-    if (!app->accounts->twitch.isLoggedIn())
-    {
-        // XXX: It would be nice if we could add a link here somehow that opened
-        // the "account manager" dialog
-        this->addMessage(
-            makeSystemMessage("You need to log in to send messages. You can "
-                              "link your Twitch account in the settings."));
-        return;
-    }
-
-    qCDebug(chatterinoTwitch)
-        << "[TwitchChannel" << this->getName() << "] Send message:" << message;
-
-    // Do last message processing
     QString parsedMessage = app->emotes->emojis.replaceShortCodes(message);
 
-    parsedMessage = parsedMessage.trimmed();
+    parsedMessage = parsedMessage.simplified();
 
     if (parsedMessage.isEmpty())
     {
-        return;
+        return "";
     }
 
     if (!this->hasHighRateLimit())
@@ -357,13 +383,93 @@ void TwitchChannel::sendMessage(const QString &message)
         {
             if (parsedMessage == this->lastSentMessage_)
             {
-                parsedMessage.append(MAGIC_MESSAGE_SUFFIX);
+                auto spaceIndex = parsedMessage.indexOf(' ');
+                // If the message starts with either '/' or '.' Twitch will treat it as a command, omitting
+                // first space and only rest of the arguments treated as actual message content
+                // In cases when user sends a message like ". .a b" first character and first space are omitted as well
+                bool ignoreFirstSpace =
+                    parsedMessage.at(0) == '/' || parsedMessage.at(0) == '.';
+                if (ignoreFirstSpace)
+                {
+                    spaceIndex = parsedMessage.indexOf(' ', spaceIndex + 1);
+                }
+
+                if (spaceIndex == -1)
+                {
+                    // no spaces found, fall back to old magic character
+                    parsedMessage.append(MAGIC_MESSAGE_SUFFIX);
+                }
+                else
+                {
+                    // replace the space we found in spaceIndex with two spaces
+                    parsedMessage.replace(spaceIndex, 1, "  ");
+                }
             }
         }
     }
 
+    return parsedMessage;
+}
+
+void TwitchChannel::sendMessage(const QString &message)
+{
+    auto app = getApp();
+    if (!app->accounts->twitch.isLoggedIn())
+    {
+        if (!message.isEmpty())
+        {
+            this->showLoginMessage();
+        }
+
+        return;
+    }
+
+    qCDebug(chatterinoTwitch)
+        << "[TwitchChannel" << this->getName() << "] Send message:" << message;
+
+    // Do last message processing
+    QString parsedMessage = this->prepareMessage(message);
+    if (parsedMessage.isEmpty())
+    {
+        return;
+    }
+
     bool messageSent = false;
     this->sendMessageSignal.invoke(this->getName(), parsedMessage, messageSent);
+
+    if (messageSent)
+    {
+        qCDebug(chatterinoTwitch) << "sent";
+        this->lastSentMessage_ = parsedMessage;
+    }
+}
+
+void TwitchChannel::sendReply(const QString &message, const QString &replyId)
+{
+    auto app = getApp();
+    if (!app->accounts->twitch.isLoggedIn())
+    {
+        if (!message.isEmpty())
+        {
+            this->showLoginMessage();
+        }
+
+        return;
+    }
+
+    qCDebug(chatterinoTwitch) << "[TwitchChannel" << this->getName()
+                              << "] Send reply message:" << message;
+
+    // Do last message processing
+    QString parsedMessage = this->prepareMessage(message);
+    if (parsedMessage.isEmpty())
+    {
+        return;
+    }
+
+    bool messageSent = false;
+    this->sendReplySignal.invoke(this->getName(), parsedMessage, replyId,
+                                 messageSent);
 
     if (messageSent)
     {
@@ -436,7 +542,7 @@ bool TwitchChannel::canReconnect() const
 
 void TwitchChannel::reconnect()
 {
-    getApp()->twitch.server->connect();
+    getApp()->twitch->connect();
 }
 
 QString TwitchChannel::roomId() const
@@ -478,21 +584,6 @@ SharedAccessGuard<const TwitchChannel::StreamStatus>
     return this->streamStatus_.accessConst();
 }
 
-const TwitchBadges &TwitchChannel::globalTwitchBadges() const
-{
-    return this->globalTwitchBadges_;
-}
-
-const BttvEmotes &TwitchChannel::globalBttv() const
-{
-    return this->globalBttv_;
-}
-
-const FfzEmotes &TwitchChannel::globalFfz() const
-{
-    return this->globalFfz_;
-}
-
 boost::optional<EmotePtr> TwitchChannel::bttvEmote(const EmoteName &name) const
 {
     auto emotes = this->bttvEmotes_.get();
@@ -513,6 +604,19 @@ boost::optional<EmotePtr> TwitchChannel::ffzEmote(const EmoteName &name) const
     return it->second;
 }
 
+boost::optional<EmotePtr> TwitchChannel::seventvEmote(
+    const EmoteName &name) const
+{
+    auto emotes = this->seventvEmotes_.get();
+    auto it = emotes->find(name);
+
+    if (it == emotes->end())
+    {
+        return boost::none;
+    }
+    return it->second;
+}
+
 std::shared_ptr<const EmoteMap> TwitchChannel::bttvEmotes() const
 {
     return this->bttvEmotes_.get();
@@ -521,6 +625,268 @@ std::shared_ptr<const EmoteMap> TwitchChannel::bttvEmotes() const
 std::shared_ptr<const EmoteMap> TwitchChannel::ffzEmotes() const
 {
     return this->ffzEmotes_.get();
+}
+
+std::shared_ptr<const EmoteMap> TwitchChannel::seventvEmotes() const
+{
+    return this->seventvEmotes_.get();
+}
+
+const QString &TwitchChannel::seventvUserID() const
+{
+    return this->seventvUserID_;
+}
+const QString &TwitchChannel::seventvEmoteSetID() const
+{
+    return this->seventvEmoteSetID_;
+}
+
+void TwitchChannel::joinBttvChannel() const
+{
+    if (getApp()->twitch->bttvLiveUpdates)
+    {
+        const auto currentAccount = getApp()->accounts->twitch.getCurrent();
+        QString userName;
+        if (currentAccount && !currentAccount->isAnon())
+        {
+            userName = currentAccount->getUserName();
+        }
+        getApp()->twitch->bttvLiveUpdates->joinChannel(this->roomId(),
+                                                       userName);
+    }
+}
+
+void TwitchChannel::addBttvEmote(
+    const BttvLiveUpdateEmoteUpdateAddMessage &message)
+{
+    auto emote = BttvEmotes::addEmote(this->getDisplayName(), this->bttvEmotes_,
+                                      message);
+
+    this->addOrReplaceLiveUpdatesAddRemove(true, "BTTV", QString() /*actor*/,
+                                           emote->name.string);
+}
+
+void TwitchChannel::updateBttvEmote(
+    const BttvLiveUpdateEmoteUpdateAddMessage &message)
+{
+    auto updated = BttvEmotes::updateEmote(this->getDisplayName(),
+                                           this->bttvEmotes_, message);
+    if (!updated)
+    {
+        return;
+    }
+
+    const auto [oldEmote, newEmote] = *updated;
+    if (oldEmote->name == newEmote->name)
+    {
+        return;  // only the creator changed
+    }
+
+    auto builder = MessageBuilder(liveUpdatesUpdateEmoteMessage, "BTTV",
+                                  QString() /* actor */, newEmote->name.string,
+                                  oldEmote->name.string);
+    this->addMessage(builder.release());
+}
+
+void TwitchChannel::removeBttvEmote(
+    const BttvLiveUpdateEmoteRemoveMessage &message)
+{
+    auto removed = BttvEmotes::removeEmote(this->bttvEmotes_, message);
+    if (!removed)
+    {
+        return;
+    }
+
+    this->addOrReplaceLiveUpdatesAddRemove(false, "BTTV", QString() /*actor*/,
+                                           removed.get()->name.string);
+}
+
+void TwitchChannel::addSeventvEmote(
+    const seventv::eventapi::EmoteAddDispatch &dispatch)
+{
+    if (!SeventvEmotes::addEmote(this->seventvEmotes_, dispatch))
+    {
+        return;
+    }
+
+    this->addOrReplaceLiveUpdatesAddRemove(
+        true, "7TV", dispatch.actorName, dispatch.emoteJson["name"].toString());
+}
+
+void TwitchChannel::updateSeventvEmote(
+    const seventv::eventapi::EmoteUpdateDispatch &dispatch)
+{
+    if (!SeventvEmotes::updateEmote(this->seventvEmotes_, dispatch))
+    {
+        return;
+    }
+
+    auto builder =
+        MessageBuilder(liveUpdatesUpdateEmoteMessage, "7TV", dispatch.actorName,
+                       dispatch.emoteName, dispatch.oldEmoteName);
+    this->addMessage(builder.release());
+}
+
+void TwitchChannel::removeSeventvEmote(
+    const seventv::eventapi::EmoteRemoveDispatch &dispatch)
+{
+    auto removed = SeventvEmotes::removeEmote(this->seventvEmotes_, dispatch);
+    if (!removed)
+    {
+        return;
+    }
+
+    this->addOrReplaceLiveUpdatesAddRemove(false, "7TV", dispatch.actorName,
+                                           removed.get()->name.string);
+}
+
+void TwitchChannel::updateSeventvUser(
+    const seventv::eventapi::UserConnectionUpdateDispatch &dispatch)
+{
+    if (dispatch.connectionIndex != this->seventvUserTwitchConnectionIndex_)
+    {
+        // A different connection was updated
+        return;
+    }
+
+    updateSeventvData(this->seventvUserID_, dispatch.emoteSetID);
+    SeventvEmotes::getEmoteSet(
+        dispatch.emoteSetID,
+        [this, weak = weakOf<Channel>(this), dispatch](auto &&emotes,
+                                                       const auto &name) {
+            postToThread([this, weak, dispatch, emotes, name]() {
+                if (auto shared = weak.lock())
+                {
+                    this->seventvEmotes_.set(
+                        std::make_shared<EmoteMap>(emotes));
+                    auto builder =
+                        MessageBuilder(liveUpdatesUpdateEmoteSetMessage, "7TV",
+                                       dispatch.actorName, name);
+                    this->addMessage(builder.release());
+                }
+            });
+        },
+        [this, weak = weakOf<Channel>(this)](const auto &reason) {
+            postToThread([this, weak, reason]() {
+                if (auto shared = weak.lock())
+                {
+                    this->seventvEmotes_.set(EMPTY_EMOTE_MAP);
+                    this->addMessage(makeSystemMessage(
+                        QString("Failed updating 7TV emote set (%1).")
+                            .arg(reason)));
+                }
+            });
+        });
+}
+
+void TwitchChannel::updateSeventvData(const QString &newUserID,
+                                      const QString &newEmoteSetID)
+{
+    if (this->seventvUserID_ == newUserID &&
+        this->seventvEmoteSetID_ == newEmoteSetID)
+    {
+        return;
+    }
+
+    boost::optional<QString> oldUserID = boost::make_optional(
+        !this->seventvUserID_.isEmpty() && this->seventvUserID_ != newUserID,
+        this->seventvUserID_);
+    boost::optional<QString> oldEmoteSetID =
+        boost::make_optional(!this->seventvEmoteSetID_.isEmpty() &&
+                                 this->seventvEmoteSetID_ != newEmoteSetID,
+                             this->seventvEmoteSetID_);
+
+    this->seventvUserID_ = newUserID;
+    this->seventvEmoteSetID_ = newEmoteSetID;
+    runInGuiThread([this, oldUserID, oldEmoteSetID]() {
+        if (getApp()->twitch->seventvEventAPI)
+        {
+            getApp()->twitch->seventvEventAPI->subscribeUser(
+                this->seventvUserID_, this->seventvEmoteSetID_);
+
+            if (oldUserID || oldEmoteSetID)
+            {
+                getApp()->twitch->dropSeventvChannel(
+                    oldUserID.get_value_or(QString()),
+                    oldEmoteSetID.get_value_or(QString()));
+            }
+        }
+    });
+}
+
+void TwitchChannel::addOrReplaceLiveUpdatesAddRemove(bool isEmoteAdd,
+                                                     const QString &platform,
+                                                     const QString &actor,
+                                                     const QString &emoteName)
+{
+    if (this->tryReplaceLastLiveUpdateAddOrRemove(
+            isEmoteAdd ? MessageFlag::LiveUpdatesAdd
+                       : MessageFlag::LiveUpdatesRemove,
+            platform, actor, emoteName))
+    {
+        return;
+    }
+
+    this->lastLiveUpdateEmoteNames_ = {emoteName};
+
+    MessagePtr msg;
+    if (isEmoteAdd)
+    {
+        msg = MessageBuilder(liveUpdatesAddEmoteMessage, platform, actor,
+                             this->lastLiveUpdateEmoteNames_)
+                  .release();
+    }
+    else
+    {
+        msg = MessageBuilder(liveUpdatesRemoveEmoteMessage, platform, actor,
+                             this->lastLiveUpdateEmoteNames_)
+                  .release();
+    }
+    this->lastLiveUpdateEmotePlatform_ = platform;
+    this->lastLiveUpdateMessage_ = msg;
+    this->lastLiveUpdateEmoteActor_ = actor;
+    this->addMessage(msg);
+}
+
+bool TwitchChannel::tryReplaceLastLiveUpdateAddOrRemove(
+    MessageFlag op, const QString &platform, const QString &actor,
+    const QString &emoteName)
+{
+    if (this->lastLiveUpdateEmotePlatform_ != platform)
+    {
+        return false;
+    }
+    auto last = this->lastLiveUpdateMessage_.lock();
+    if (!last || !last->flags.has(op) ||
+        last->parseTime < QTime::currentTime().addSecs(-5) ||
+        last->loginName != actor)
+    {
+        return false;
+    }
+    // Update the message
+    this->lastLiveUpdateEmoteNames_.push_back(emoteName);
+
+    MessageBuilder replacement;
+    if (op == MessageFlag::LiveUpdatesAdd)
+    {
+        replacement =
+            MessageBuilder(liveUpdatesAddEmoteMessage, platform,
+                           last->loginName, this->lastLiveUpdateEmoteNames_);
+    }
+    else  // op == RemoveEmoteMessage
+    {
+        replacement =
+            MessageBuilder(liveUpdatesRemoveEmoteMessage, platform,
+                           last->loginName, this->lastLiveUpdateEmoteNames_);
+    }
+
+    replacement->flags = last->flags;
+
+    auto msg = replacement.release();
+    this->lastLiveUpdateMessage_ = msg;
+    this->replaceMessage(last, msg);
+
+    return true;
 }
 
 const QString &TwitchChannel::subscriptionUrl()
@@ -559,7 +925,7 @@ void TwitchChannel::setLive(bool newLiveStatus)
                     if (Toasts::isEnabled())
                     {
                         getApp()->toasts->sendChannelNotification(
-                            this->getName(), Platform::Twitch);
+                            this->getName(), guard->title, Platform::Twitch);
                     }
                     if (getSettings()->notificationPlaySound)
                     {
@@ -570,15 +936,54 @@ void TwitchChannel::setLive(bool newLiveStatus)
                         getApp()->windows->sendAlert();
                     }
                 }
-                auto live =
-                    makeSystemMessage(this->getDisplayName() + " is live");
-                this->addMessage(live);
+                // Channel live message
+                MessageBuilder builder;
+                TwitchMessageBuilder::liveSystemMessage(this->getDisplayName(),
+                                                        &builder);
+                this->addMessage(builder.release());
+
+                // Message in /live channel
+                MessageBuilder builder2;
+                TwitchMessageBuilder::liveMessage(this->getDisplayName(),
+                                                  &builder2);
+                getApp()->twitch->liveChannel->addMessage(builder2.release());
+
+                // Notify on all channels with a ping sound
+                if (getSettings()->notificationOnAnyChannel &&
+                    !(isInStreamerMode() &&
+                      getSettings()->streamerModeSuppressLiveNotifications))
+                {
+                    getApp()->notifications->playSound();
+                }
             }
             else
             {
-                auto offline =
-                    makeSystemMessage(this->getDisplayName() + " is offline");
-                this->addMessage(offline);
+                // Channel offline message
+                MessageBuilder builder;
+                TwitchMessageBuilder::offlineSystemMessage(
+                    this->getDisplayName(), &builder);
+                this->addMessage(builder.release());
+
+                // "delete" old 'CHANNEL is live' message
+                LimitedQueueSnapshot<MessagePtr> snapshot =
+                    getApp()->twitch->liveChannel->getMessageSnapshot();
+                int snapshotLength = snapshot.size();
+
+                // MSVC hates this code if the parens are not there
+                int end = (std::max)(0, snapshotLength - 200);
+                auto liveMessageSearchText =
+                    QString("%1 is live!").arg(this->getDisplayName());
+
+                for (int i = snapshotLength - 1; i >= end; --i)
+                {
+                    auto &s = snapshot[i];
+
+                    if (s->messageText == liveMessageSearchText)
+                    {
+                        s->flags.set(MessageFlag::Disabled);
+                        break;
+                    }
+                }
             }
             guard->live = newLiveStatus;
         }
@@ -651,6 +1056,9 @@ void TwitchChannel::refreshLiveStatus()
         },
         [] {
             // failure
+        },
+        [] {
+            // finally
         });
 }
 
@@ -665,31 +1073,8 @@ void TwitchChannel::parseLiveStatus(bool live, const HelixStream &stream)
     {
         auto status = this->streamStatus_.access();
         status->viewerCount = stream.viewerCount;
-        if (status->gameId != stream.gameId)
-        {
-            status->gameId = stream.gameId;
-
-            // Resolve game ID to game name
-            getHelix()->getGameById(
-                stream.gameId,
-                [this, weak = weakOf<Channel>(this)](const auto &game) {
-                    ChannelPtr shared = weak.lock();
-                    if (!shared)
-                    {
-                        return;
-                    }
-
-                    {
-                        auto status = this->streamStatus_.access();
-                        status->game = game.name;
-                    }
-
-                    this->liveStatusChanged.invoke();
-                },
-                [] {
-                    // failure
-                });
-        }
+        status->gameId = stream.gameId;
+        status->game = stream.gameName;
         status->title = stream.title;
         QDateTime since = QDateTime::fromString(stream.startedAt, Qt::ISODate);
         auto diff = since.secsTo(QDateTime::currentDateTime());
@@ -713,59 +1098,104 @@ void TwitchChannel::loadRecentMessages()
         return;
     }
 
-    auto baseURL = Env::get().recentMessagesApiUrl.arg(this->getName());
+    if (this->loadingRecentMessages_.test_and_set())
+    {
+        return;  // already loading
+    }
 
-    auto url = QString("%1?limit=%2")
-                   .arg(baseURL)
-                   .arg(getSettings()->twitchMessageHistoryLimit);
-
-    NetworkRequest(url)
-        .concurrent()
-        .onSuccess([weak = weakOf<Channel>(this)](auto result) -> Outcome {
+    auto weak = weakOf<Channel>(this);
+    RecentMessagesApi::loadRecentMessages(
+        this->getName(), weak,
+        [weak](const auto &messages) {
             auto shared = weak.lock();
             if (!shared)
-                return Failure;
+                return;
 
-            auto messages = parseRecentMessages(result.parseJson(), shared);
+            auto tc = dynamic_cast<TwitchChannel *>(shared.get());
+            if (!tc)
+                return;
 
-            auto &handler = IrcMessageHandler::instance();
+            tc->addMessagesAtStart(messages);
+            tc->loadingRecentMessages_.clear();
+        },
+        [weak]() {
+            auto shared = weak.lock();
+            if (!shared)
+                return;
 
-            std::vector<MessagePtr> allBuiltMessages;
+            auto tc = dynamic_cast<TwitchChannel *>(shared.get());
+            if (!tc)
+                return;
 
-            for (auto message : messages)
-            {
-                for (auto builtMessage :
-                     handler.parseMessage(shared.get(), message))
-                {
-                    builtMessage->flags.set(MessageFlag::RecentMessage);
-                    allBuiltMessages.emplace_back(builtMessage);
-                }
-            }
-
-            postToThread(
-                [shared, messages = std::move(allBuiltMessages)]() mutable {
-                    shared->addMessagesAtStart(messages);
-                });
-
-            return Success;
-        })
-        .execute();
+            tc->loadingRecentMessages_.clear();
+        });
 }
 
-void TwitchChannel::refreshPubsub()
+void TwitchChannel::loadRecentMessagesReconnect()
+{
+    if (!getSettings()->loadTwitchMessageHistoryOnConnect)
+    {
+        return;
+    }
+
+    if (this->loadingRecentMessages_.test_and_set())
+    {
+        return;  // already loading
+    }
+
+    auto weak = weakOf<Channel>(this);
+    RecentMessagesApi::loadRecentMessages(
+        this->getName(), weak,
+        [weak](const auto &messages) {
+            auto shared = weak.lock();
+            if (!shared)
+                return;
+
+            auto tc = dynamic_cast<TwitchChannel *>(shared.get());
+            if (!tc)
+                return;
+
+            tc->fillInMissingMessages(messages);
+            tc->loadingRecentMessages_.clear();
+        },
+        [weak]() {
+            auto shared = weak.lock();
+            if (!shared)
+                return;
+
+            auto tc = dynamic_cast<TwitchChannel *>(shared.get());
+            if (!tc)
+                return;
+
+            tc->loadingRecentMessages_.clear();
+        });
+}
+
+void TwitchChannel::refreshPubSub()
 {
     auto roomId = this->roomId();
     if (roomId.isEmpty())
+    {
         return;
+    }
 
-    auto account = getApp()->accounts->twitch.getCurrent();
-    getApp()->twitch2->pubsub->listenToChannelModerationActions(roomId,
-                                                                account);
-    getApp()->twitch2->pubsub->listenToChannelPointRewards(roomId, account);
+    auto currentAccount = getApp()->accounts->twitch.getCurrent();
+
+    getApp()->twitch->pubsub->setAccount(currentAccount);
+
+    getApp()->twitch->pubsub->listenToChannelModerationActions(roomId);
+    getApp()->twitch->pubsub->listenToAutomod(roomId);
+    getApp()->twitch->pubsub->listenToChannelPointRewards(roomId);
 }
 
 void TwitchChannel::refreshChatters()
 {
+    // helix endpoint only works for mods
+    if (!this->hasModRights())
+    {
+        return;
+    }
+
     // setting?
     const auto streamStatus = this->accessStreamStatus();
     const auto viewerCount = static_cast<int>(streamStatus->viewerCount);
@@ -778,31 +1208,19 @@ void TwitchChannel::refreshChatters()
         }
     }
 
-    // get viewer list
-    NetworkRequest("https://tmi.twitch.tv/group/user/" + this->getName() +
-                   "/chatters")
-
-        .onSuccess(
-            [this, weak = weakOf<Channel>(this)](auto result) -> Outcome {
-                // channel still exists?
-                auto shared = weak.lock();
-                if (!shared)
-                {
-                    return Failure;
-                }
-
-                auto data = result.parseJson();
-                this->chatterCount_ = data.value("chatter_count").toInt();
-
-                auto pair = parseChatters(std::move(data));
-                if (pair.first)
-                {
-                    this->setChatters(std::move(pair.second));
-                }
-
-                return pair.first;
-            })
-        .execute();
+    // Get chatter list via helix api
+    getHelix()->getChatters(
+        this->roomId(), getApp()->accounts->twitch.getCurrent()->getUserId(),
+        MAX_CHATTERS_TO_FETCH,
+        [this, weak = weakOf<Channel>(this)](auto result) {
+            if (auto shared = weak.lock())
+            {
+                this->updateOnlineChatters(result.chatters);
+                this->chatterCount_ = result.total;
+            }
+        },
+        // Refresh chatters should only be used when failing silently is an option
+        [](auto error, auto message) {});
 }
 
 void TwitchChannel::fetchDisplayName()
@@ -830,6 +1248,39 @@ void TwitchChannel::fetchDisplayName()
             channel->displayNameChanged.invoke();
         },
         [] {});
+}
+
+void TwitchChannel::addReplyThread(const std::shared_ptr<MessageThread> &thread)
+{
+    this->threads_[thread->rootId()] = thread;
+}
+
+const std::unordered_map<QString, std::weak_ptr<MessageThread>>
+    &TwitchChannel::threads() const
+{
+    return this->threads_;
+}
+
+void TwitchChannel::cleanUpReplyThreads()
+{
+    for (auto it = this->threads_.begin(), last = this->threads_.end();
+         it != last;)
+    {
+        bool doErase = true;
+        if (auto thread = it->second.lock())
+        {
+            doErase = thread->liveCount() == 0;
+        }
+
+        if (doErase)
+        {
+            it = this->threads_.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
 }
 
 void TwitchChannel::refreshBadges()
@@ -882,28 +1333,26 @@ void TwitchChannel::refreshBadges()
 
 void TwitchChannel::refreshCheerEmotes()
 {
-    QString url("https://api.twitch.tv/kraken/bits/actions?channel_id=" +
-                this->roomId());
-    NetworkRequest::twitchRequest(url)
-        .onSuccess([this,
-                    weak = weakOf<Channel>(this)](auto result) -> Outcome {
+    getHelix()->getCheermotes(
+        this->roomId(),
+        [this, weak = weakOf<Channel>(this)](
+            const std::vector<HelixCheermoteSet> &cheermoteSets) -> Outcome {
             auto shared = weak.lock();
             if (!shared)
             {
                 return Failure;
             }
 
-            auto cheerEmoteSets = ParseCheermoteSets(result.parseRapidJson());
             std::vector<CheerEmoteSet> emoteSets;
 
-            for (auto &set : cheerEmoteSets)
+            for (const auto &set : cheermoteSets)
             {
                 auto cheerEmoteSet = CheerEmoteSet();
                 cheerEmoteSet.regex = QRegularExpression(
                     "^" + set.prefix + "([1-9][0-9]*)$",
                     QRegularExpression::CaseInsensitiveOption);
 
-                for (auto &tier : set.tiers)
+                for (const auto &tier : set.tiers)
                 {
                     CheerEmote cheerEmote;
 
@@ -921,36 +1370,42 @@ void TwitchChannel::refreshCheerEmotes()
                     cheerEmote.animatedEmote = std::make_shared<Emote>(
                         Emote{EmoteName{"cheer emote"},
                               ImageSet{
-                                  tier.images["dark"]["animated"]["1"],
-                                  tier.images["dark"]["animated"]["2"],
-                                  tier.images["dark"]["animated"]["4"],
+                                  tier.darkAnimated.imageURL1x,
+                                  tier.darkAnimated.imageURL2x,
+                                  tier.darkAnimated.imageURL4x,
                               },
                               Tooltip{emoteTooltip}, Url{}});
                     cheerEmote.staticEmote = std::make_shared<Emote>(
                         Emote{EmoteName{"cheer emote"},
                               ImageSet{
-                                  tier.images["dark"]["static"]["1"],
-                                  tier.images["dark"]["static"]["2"],
-                                  tier.images["dark"]["static"]["4"],
+                                  tier.darkStatic.imageURL1x,
+                                  tier.darkStatic.imageURL2x,
+                                  tier.darkStatic.imageURL4x,
                               },
                               Tooltip{emoteTooltip}, Url{}});
 
-                    cheerEmoteSet.cheerEmotes.emplace_back(cheerEmote);
+                    cheerEmoteSet.cheerEmotes.emplace_back(
+                        std::move(cheerEmote));
                 }
 
+                // Sort cheermotes by cost
                 std::sort(cheerEmoteSet.cheerEmotes.begin(),
                           cheerEmoteSet.cheerEmotes.end(),
                           [](const auto &lhs, const auto &rhs) {
                               return lhs.minBits > rhs.minBits;
                           });
 
-                emoteSets.emplace_back(cheerEmoteSet);
+                emoteSets.emplace_back(std::move(cheerEmoteSet));
             }
+
             *this->cheerEmoteSets_.access() = std::move(emoteSets);
 
             return Success;
-        })
-        .execute();
+        },
+        [] {
+            // Failure
+            return Failure;
+        });
 }
 
 void TwitchChannel::createClip()
@@ -981,6 +1436,10 @@ void TwitchChannel::createClip()
         // successCallback
         [this](const HelixClip &clip) {
             MessageBuilder builder;
+            QString text(
+                "Clip created! Copy link to clipboard or edit it in browser.");
+            builder.message().messageText = text;
+            builder.message().searchText = text;
             builder.message().flags.set(MessageFlag::System);
 
             builder.emplace<TimestampElement>();
@@ -1009,6 +1468,7 @@ void TwitchChannel::createClip()
         // failureCallback
         [this](auto error) {
             MessageBuilder builder;
+            QString text;
             builder.message().flags.set(MessageFlag::System);
 
             builder.emplace<TimestampElement>();
@@ -1019,6 +1479,7 @@ void TwitchChannel::createClip()
                     builder.emplace<TextElement>(
                         CLIPS_FAILURE_CLIPS_DISABLED_TEXT,
                         MessageElementFlag::Text, MessageColor::System);
+                    text = CLIPS_FAILURE_CLIPS_DISABLED_TEXT;
                 }
                 break;
 
@@ -1031,6 +1492,9 @@ void TwitchChannel::createClip()
                                               MessageElementFlag::Text,
                                               MessageColor::Link)
                         ->setLink(ACCOUNTS_LINK);
+                    text = QString("%1 %2").arg(
+                        CLIPS_FAILURE_NOT_AUTHENTICATED_TEXT,
+                        LOGIN_PROMPT_TEXT);
                 }
                 break;
 
@@ -1040,9 +1504,13 @@ void TwitchChannel::createClip()
                     builder.emplace<TextElement>(
                         CLIPS_FAILURE_UNKNOWN_ERROR_TEXT,
                         MessageElementFlag::Text, MessageColor::System);
+                    text = CLIPS_FAILURE_UNKNOWN_ERROR_TEXT;
                 }
                 break;
             }
+
+            builder.message().messageText = text;
+            builder.message().searchText = text;
 
             this->addMessage(builder.release());
         },

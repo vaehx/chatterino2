@@ -1,15 +1,18 @@
 #include "Args.hpp"
 
-#include <QApplication>
-#include <QCommandLineParser>
-#include <QDebug>
-#include <QStringList>
 #include "common/QLogging.hpp"
 #include "singletons/Paths.hpp"
 #include "singletons/WindowManager.hpp"
 #include "util/AttachToConsole.hpp"
 #include "util/CombinePath.hpp"
 #include "widgets/Window.hpp"
+
+#include <QApplication>
+#include <QCommandLineParser>
+#include <QDebug>
+#include <QRegularExpression>
+#include <QStringList>
+#include <QUuid>
 
 namespace chatterino {
 
@@ -46,7 +49,7 @@ Args::Args(const QApplication &app)
     parser.addOption(QCommandLineOption(
         {"c", "channels"},
         "Joins only supplied channels on startup. Use letters with colons to "
-        "specify platform. Only twitch channels are supported at the moment.\n"
+        "specify platform. Only Twitch channels are supported at the moment.\n"
         "If platform isn't specified, default is Twitch.",
         "t:channel1;t:channel2;..."));
 
@@ -131,11 +134,11 @@ void Args::applyCustomChannelLayout(const QString &argValue)
         QString platform = "t";
         QString channelName = channelArg;
 
-        const QRegExp regExp("(.):(.*)");
-        if (regExp.indexIn(channelArg) != -1)
+        const QRegularExpression regExp("(.):(.*)");
+        if (auto match = regExp.match(channelArg); match.hasMatch())
         {
-            platform = regExp.cap(1);
-            channelName = regExp.cap(2);
+            platform = match.captured(1);
+            channelName = match.captured(2);
         }
 
         // Twitch (default)
@@ -145,7 +148,7 @@ void Args::applyCustomChannelLayout(const QString &argValue)
 
             // Set first tab as selected
             tab.selected_ = window.tabs_.empty();
-            tab.rootNode_ = SplitNodeDescriptor{"twitch", channelName};
+            tab.rootNode_ = SplitNodeDescriptor{{"twitch", channelName}};
 
             window.tabs_.emplace_back(std::move(tab));
         }

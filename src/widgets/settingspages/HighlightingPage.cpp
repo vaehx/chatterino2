@@ -1,31 +1,48 @@
 #include "HighlightingPage.hpp"
 
 #include "Application.hpp"
+#include "controllers/highlights/BadgeHighlightModel.hpp"
+#include "controllers/highlights/HighlightBadge.hpp"
 #include "controllers/highlights/HighlightBlacklistModel.hpp"
+#include "controllers/highlights/HighlightBlacklistUser.hpp"
 #include "controllers/highlights/HighlightModel.hpp"
+#include "controllers/highlights/HighlightPhrase.hpp"
 #include "controllers/highlights/UserHighlightModel.hpp"
+#include "providers/colors/ColorProvider.hpp"
 #include "singletons/Settings.hpp"
 #include "singletons/Theme.hpp"
+#include "util/Helpers.hpp"
 #include "util/LayoutCreator.hpp"
-#include "util/StandardItemHelper.hpp"
+#include "widgets/dialogs/BadgePickerDialog.hpp"
 #include "widgets/dialogs/ColorPickerDialog.hpp"
+#include "widgets/helper/EditableModelView.hpp"
 
 #include <QFileDialog>
 #include <QHeaderView>
-#include <QListWidget>
 #include <QPushButton>
 #include <QStandardItemModel>
-#include <QTabWidget>
 #include <QTableView>
-#include <QTextEdit>
+#include <QTabWidget>
 
-#define ENABLE_HIGHLIGHTS "Enable Highlighting"
-#define HIGHLIGHT_MSG "Highlight messages containing your name"
-#define PLAY_SOUND "Play sound when your name is mentioned"
-#define FLASH_TASKBAR "Flash taskbar when your name is mentioned"
 #define ALWAYS_PLAY "Play highlight sound even when Chatterino is focused"
 
 namespace chatterino {
+
+namespace {
+    // Add additional badges for highlights here
+    QList<DisplayBadge> availableBadges = {
+        {"Broadcaster", "broadcaster"},
+        {"Admin", "admin"},
+        {"Staff", "staff"},
+        {"Moderator", "moderator"},
+        {"Verified", "partner"},
+        {"VIP", "vip"},
+        {"Founder", "founder"},
+        {"Subscriber", "subscriber"},
+        {"Predicted Blue", "predictions/blue-1,predictions/blue-2"},
+        {"Predicted Pink", "predictions/pink-2,predictions/pink-1"},
+    };
+}  // namespace
 
 HighlightingPage::HighlightingPage()
 {
@@ -45,7 +62,9 @@ HighlightingPage::HighlightingPage()
             {
                 highlights.emplace<QLabel>(
                     "Play notification sounds and highlight messages based on "
-                    "certain patterns.");
+                    "certain patterns.\n"
+                    "Message highlights are prioritized over badge highlights "
+                    "and user highlights.");
 
                 auto view =
                     highlights
@@ -56,8 +75,8 @@ HighlightingPage::HighlightingPage()
                         .getElement();
                 view->addRegexHelpLink();
                 view->setTitles({"Pattern", "Show in\nMentions",
-                                 "Flash\ntaskbar", "Play\nsound",
-                                 "Enable\nregex", "Case-\nsensitive",
+                                 "Flash\ntaskbar", "Enable\nregex",
+                                 "Case-\nsensitive", "Play\nsound",
                                  "Custom\nsound", "Color"});
                 view->getTableView()->horizontalHeader()->setSectionResizeMode(
                     QHeaderView::Fixed);
@@ -68,7 +87,7 @@ HighlightingPage::HighlightingPage()
                 // dpiChanged
                 QTimer::singleShot(1, [view] {
                     view->getTableView()->resizeColumnsToContents();
-                    view->getTableView()->setColumnWidth(0, 200);
+                    view->getTableView()->setColumnWidth(0, 400);
                 });
 
                 view->addButtonPressed.connect([] {
@@ -80,7 +99,8 @@ HighlightingPage::HighlightingPage()
 
                 QObject::connect(view->getTableView(), &QTableView::clicked,
                                  [this, view](const QModelIndex &clicked) {
-                                     this->tableCellClicked(clicked, view);
+                                     this->tableCellClicked(
+                                         clicked, view, HighlightTab::Messages);
                                  });
             }
 
@@ -89,8 +109,8 @@ HighlightingPage::HighlightingPage()
                 pingUsers.emplace<QLabel>(
                     "Play notification sounds and highlight messages from "
                     "certain users.\n"
-                    "User highlights are prioritized over message "
-                    "highlights.");
+                    "User highlights are prioritized badge highlights, but "
+                    "under message highlights.");
                 EditableModelView *view =
                     pingUsers
                         .emplace<EditableModelView>(
@@ -106,8 +126,8 @@ HighlightingPage::HighlightingPage()
                 // Case-sensitivity doesn't make sense for user names so it is
                 // set to "false" by default & the column is hidden
                 view->setTitles({"Username", "Show in\nMentions",
-                                 "Flash\ntaskbar", "Play\nsound",
-                                 "Enable\nregex", "Case-\nsensitive",
+                                 "Flash\ntaskbar", "Enable\nregex",
+                                 "Case-\nsensitive", "Play\nsound",
                                  "Custom\nsound", "Color"});
                 view->getTableView()->horizontalHeader()->setSectionResizeMode(
                     QHeaderView::Fixed);
@@ -130,7 +150,62 @@ HighlightingPage::HighlightingPage()
 
                 QObject::connect(view->getTableView(), &QTableView::clicked,
                                  [this, view](const QModelIndex &clicked) {
-                                     this->tableCellClicked(clicked, view);
+                                     this->tableCellClicked(
+                                         clicked, view, HighlightTab::Users);
+                                 });
+            }
+
+            auto badgeHighlights = tabs.appendTab(new QVBoxLayout, "Badges");
+            {
+                badgeHighlights.emplace<QLabel>(
+                    "Play notification sounds and highlight messages based on "
+                    "user badges.\n"
+                    "Badge highlights are prioritzed under user and message "
+                    "highlights.");
+                auto view = badgeHighlights
+                                .emplace<EditableModelView>(
+                                    (new BadgeHighlightModel(nullptr))
+                                        ->initialized(
+                                            &getSettings()->highlightedBadges))
+                                .getElement();
+                view->setTitles({"Name", "Show In\nMentions", "Flash\ntaskbar",
+                                 "Play\nsound", "Custom\nsound", "Color"});
+                view->getTableView()->horizontalHeader()->setSectionResizeMode(
+                    QHeaderView::Fixed);
+                view->getTableView()->horizontalHeader()->setSectionResizeMode(
+                    0, QHeaderView::Stretch);
+
+                // fourtf: make class extrend BaseWidget and add this to
+                // dpiChanged
+                QTimer::singleShot(1, [view] {
+                    view->getTableView()->resizeColumnsToContents();
+                    view->getTableView()->setColumnWidth(0, 200);
+                });
+
+                view->addButtonPressed.connect([this] {
+                    auto d = std::make_shared<BadgePickerDialog>(
+                        availableBadges, this);
+
+                    d->setWindowTitle("Choose badge");
+                    if (d->exec() == QDialog::Accepted)
+                    {
+                        auto s = d->getSelection();
+                        if (!s)
+                        {
+                            return;
+                        }
+                        getSettings()->highlightedBadges.append(
+                            HighlightBadge{s->badgeName(), s->displayName(),
+                                           false, false, false, "",
+                                           *ColorProvider::instance().color(
+                                               ColorType::SelfHighlight)});
+                    }
+                });
+
+                QObject::connect(view->getTableView(), &QTableView::clicked,
+                                 [this, view](const QModelIndex &clicked) {
+                                     this->tableCellClicked(
+                                         clicked, view, HighlightTab::Badges);
                                  });
             }
 
@@ -171,111 +246,156 @@ HighlightingPage::HighlightingPage()
         // MISC
         auto customSound = layout.emplace<QHBoxLayout>().withoutMargin();
         {
-            auto fallbackSound = customSound.append(this->createCheckBox(
-                "Fallback sound (played when no other sound is set)",
-                getSettings()->customHighlightSound));
+            auto label = customSound.append(this->createLabel<QString>(
+                [](const auto &value) {
+                    if (value.isEmpty())
+                    {
+                        return QString("Default sound: Chatterino Ping");
+                    }
 
-            auto getSelectFileText = [] {
-                const QString value = getSettings()->pathHighlightSound;
-                return value.isEmpty() ? "Select custom fallback sound"
-                                       : QUrl::fromLocalFile(value).fileName();
-            };
+                    auto url = QUrl::fromLocalFile(value);
+                    return QString("Default sound: <a href=\"%1\"><span "
+                                   "style=\"color: white\">%2</span></a>")
+                        .arg(url.toString(QUrl::FullyEncoded),
+                             shortenString(url.fileName(), 50));
+                },
+                getSettings()->pathHighlightSound));
+            label->setToolTip(
+                "This sound will play for all highlight phrases that have "
+                "sound enabled and don't have a custom sound set.");
+            label->setTextFormat(Qt::RichText);
+            label->setTextInteractionFlags(Qt::TextBrowserInteraction |
+                                           Qt::LinksAccessibleByKeyboard);
+            label->setOpenExternalLinks(true);
+            customSound->setStretchFactor(label.getElement(), 1);
 
-            auto selectFile =
-                customSound.emplace<QPushButton>(getSelectFileText());
+            auto clearSound = customSound.emplace<QPushButton>("Clear");
+            auto selectFile = customSound.emplace<QPushButton>("Change...");
 
-            QObject::connect(
-                selectFile.getElement(), &QPushButton::clicked, this,
-                [=]() mutable {
-                    auto fileName = QFileDialog::getOpenFileName(
-                        this, tr("Open Sound"), "",
-                        tr("Audio Files (*.mp3 *.wav)"));
+            QObject::connect(selectFile.getElement(), &QPushButton::clicked,
+                             this, [this]() mutable {
+                                 auto fileName = QFileDialog::getOpenFileName(
+                                     this, tr("Open Sound"), "",
+                                     tr("Audio Files (*.mp3 *.wav)"));
 
-                    getSettings()->pathHighlightSound = fileName;
-                    selectFile.getElement()->setText(getSelectFileText());
+                                 getSettings()->pathHighlightSound = fileName;
+                             });
+            QObject::connect(clearSound.getElement(), &QPushButton::clicked,
+                             this, [=]() mutable {
+                                 getSettings()->pathHighlightSound = QString();
+                             });
 
-                    // Set check box according to updated value
-                    fallbackSound->setCheckState(
-                        fileName.isEmpty() ? Qt::Unchecked : Qt::Checked);
-                });
+            getSettings()->pathHighlightSound.connect(
+                [clearSound = clearSound.getElement()](const auto &value) {
+                    if (value.isEmpty())
+                    {
+                        clearSound->hide();
+                    }
+                    else
+                    {
+                        clearSound->show();
+                    }
+                },
+                this->managedConnections_);
         }
 
         layout.append(createCheckBox(ALWAYS_PLAY,
                                      getSettings()->highlightAlwaysPlaySound));
         layout.append(createCheckBox(
-            "Flash taskbar only stops highlighting when chatterino is focused",
+            "Flash taskbar only stops highlighting when Chatterino is focused",
             getSettings()->longAlerts));
     }
 
     // ---- misc
     this->disabledUsersChangedTimer_.setSingleShot(true);
-}  // namespace chatterino
+}
 
-void HighlightingPage::tableCellClicked(const QModelIndex &clicked,
-                                        EditableModelView *view)
+void HighlightingPage::openSoundDialog(const QModelIndex &clicked,
+                                       EditableModelView *view, int soundColumn)
 {
-    using Column = HighlightModel::Column;
+    auto fileUrl = QFileDialog::getOpenFileUrl(this, tr("Open Sound"), QUrl(),
+                                               tr("Audio Files (*.mp3 *.wav)"));
+    view->getModel()->setData(clicked, fileUrl, Qt::UserRole);
+    view->getModel()->setData(clicked, fileUrl.fileName(), Qt::DisplayRole);
+}
 
-    if (clicked.column() == Column::SoundPath)
-    {
-        auto fileUrl = QFileDialog::getOpenFileUrl(
-            this, tr("Open Sound"), QUrl(), tr("Audio Files (*.mp3 *.wav)"));
-        view->getModel()->setData(clicked, fileUrl, Qt::UserRole);
-        view->getModel()->setData(clicked, fileUrl.fileName(), Qt::DisplayRole);
+void HighlightingPage::openColorDialog(const QModelIndex &clicked,
+                                       EditableModelView *view,
+                                       HighlightTab tab)
+{
+    auto initial =
+        view->getModel()->data(clicked, Qt::DecorationRole).value<QColor>();
 
-        // Enable custom sound check box if user set a sound
-        if (!fileUrl.isEmpty())
+    auto dialog = new ColorPickerDialog(initial, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->show();
+    dialog->closed.connect([=](auto selected) {
+        if (selected.isValid())
         {
-            QModelIndex checkBox = clicked.siblingAtColumn(Column::PlaySound);
-            view->getModel()->setData(checkBox, Qt::Checked,
-                                      Qt::CheckStateRole);
-        }
-    }
-    else if (clicked.column() == Column::Color)
-    {
-        // Hacky (?) way to figure out what tab the cell was clicked in
-        const bool fromMessagesTab =
-            (dynamic_cast<HighlightModel *>(view->getModel()) != nullptr);
+            view->getModel()->setData(clicked, selected, Qt::DecorationRole);
 
-        if (fromMessagesTab && clicked.row() == HighlightModel::WHISPER_ROW)
-            return;
-
-        auto initial =
-            view->getModel()->data(clicked, Qt::DecorationRole).value<QColor>();
-
-        auto dialog = new ColorPickerDialog(initial, this);
-        dialog->setAttribute(Qt::WA_DeleteOnClose);
-        dialog->show();
-        dialog->closed.connect([=](QColor selected) {
-            if (selected.isValid())
+            if (tab == HighlightTab::Messages)
             {
-                view->getModel()->setData(clicked, selected,
-                                          Qt::DecorationRole);
-
-                if (fromMessagesTab)
+                /*
+                 * For preset highlights in the "Messages" tab, we need to
+                 * manually update the color map.
+                 */
+                auto instance = ColorProvider::instance();
+                switch (clicked.row())
                 {
-                    /*
-                     * For preset highlights in the "Messages" tab, we need to
-                     * manually update the color map.
-                     */
-                    auto instance = ColorProvider::instance();
-                    switch (clicked.row())
-                    {
-                        case 0:
-                            instance.updateColor(ColorType::SelfHighlight,
-                                                 selected);
-                            break;
-                        case 1:
-                            instance.updateColor(ColorType::Whisper, selected);
-                            break;
-                        case 2:
-                            instance.updateColor(ColorType::Subscription,
-                                                 selected);
-                            break;
-                    }
+                    case 0:
+                        instance.updateColor(ColorType::SelfHighlight,
+                                             selected);
+                        break;
+                    case 1:
+                        instance.updateColor(ColorType::Whisper, selected);
+                        break;
+                    case 2:
+                        instance.updateColor(ColorType::Subscription, selected);
+                        break;
                 }
             }
-        });
+        }
+    });
+}
+
+void HighlightingPage::tableCellClicked(const QModelIndex &clicked,
+                                        EditableModelView *view,
+                                        HighlightTab tab)
+{
+    switch (tab)
+    {
+        case HighlightTab::Messages:
+        case HighlightTab::Users: {
+            using Column = HighlightModel::Column;
+            bool restrictColorRow =
+                (tab == HighlightTab::Messages &&
+                 clicked.row() ==
+                     HighlightModel::HighlightRowIndexes::WhisperRow);
+            if (clicked.column() == Column::SoundPath &&
+                clicked.flags().testFlag(Qt::ItemIsEnabled))
+            {
+                this->openSoundDialog(clicked, view, Column::SoundPath);
+            }
+            else if (clicked.column() == Column::Color && !restrictColorRow)
+            {
+                this->openColorDialog(clicked, view, tab);
+            }
+        }
+        break;
+
+        case HighlightTab::Badges: {
+            using Column = BadgeHighlightModel::Column;
+            if (clicked.column() == Column::SoundPath)
+            {
+                this->openSoundDialog(clicked, view, Column::SoundPath);
+            }
+            else if (clicked.column() == Column::Color)
+            {
+                this->openColorDialog(clicked, view, tab);
+            }
+        }
+        break;
     }
 }
 

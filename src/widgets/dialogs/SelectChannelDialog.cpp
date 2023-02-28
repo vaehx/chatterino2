@@ -1,24 +1,29 @@
 #include "SelectChannelDialog.hpp"
 
 #include "Application.hpp"
+#include "common/QLogging.hpp"
+#include "controllers/hotkeys/HotkeyController.hpp"
+#include "providers/irc/Irc2.hpp"
+#include "providers/irc/IrcChannel2.hpp"
+#include "providers/irc/IrcServer.hpp"
 #include "providers/twitch/TwitchIrcServer.hpp"
+#include "singletons/Settings.hpp"
 #include "singletons/Theme.hpp"
 #include "util/LayoutCreator.hpp"
-#include "util/Shortcut.hpp"
-#include "widgets/Notebook.hpp"
 #include "widgets/dialogs/IrcConnectionEditor.hpp"
+#include "widgets/helper/EditableModelView.hpp"
 #include "widgets/helper/NotebookTab.hpp"
+#include "widgets/Notebook.hpp"
 
 #include <QDialogButtonBox>
 #include <QFormLayout>
 #include <QGroupBox>
+#include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
-#include <QVBoxLayout>
-
+#include <QPushButton>
 #include <QTableView>
-#include "providers/irc/Irc2.hpp"
-#include "widgets/helper/EditableModelView.hpp"
+#include <QVBoxLayout>
 
 #define TAB_TWITCH 0
 #define TAB_IRC 1
@@ -26,9 +31,9 @@
 namespace chatterino {
 
 SelectChannelDialog::SelectChannelDialog(QWidget *parent)
-    : BaseWindow(
-          {BaseWindow::Flags::EnableCustomFrame, BaseWindow::Flags::Dialog},
-          parent)
+    : BaseWindow({BaseWindow::Flags::EnableCustomFrame,
+                  BaseWindow::Flags::Dialog, BaseWindow::DisableLayoutSave},
+                 parent)
     , selectedChannel_(Channel::getEmpty())
 {
     this->setWindowTitle("Select a channel to join");
@@ -48,7 +53,7 @@ SelectChannelDialog::SelectChannelDialog(QWidget *parent)
         auto channel_btn = vbox.emplace<QRadioButton>("Channel").assign(
             &this->ui_.twitch.channel);
         auto channel_lbl =
-            vbox.emplace<QLabel>("Join a twitch channel by its name.").hidden();
+            vbox.emplace<QLabel>("Join a Twitch channel by its name.").hidden();
         channel_lbl->setWordWrap(true);
         auto channel_edit = vbox.emplace<QLineEdit>().hidden().assign(
             &this->ui_.twitch.channelName);
@@ -74,7 +79,7 @@ SelectChannelDialog::SelectChannelDialog(QWidget *parent)
                                 .assign(&this->ui_.twitch.whispers);
         auto whispers_lbl =
             vbox.emplace<QLabel>("Shows the whispers that you receive while "
-                                 "chatterino is running.")
+                                 "Chatterino is running.")
                 .hidden();
 
         whispers_lbl->setWordWrap(true);
@@ -105,7 +110,7 @@ SelectChannelDialog::SelectChannelDialog(QWidget *parent)
         auto watching_btn = vbox.emplace<QRadioButton>("Watching")
                                 .assign(&this->ui_.twitch.watching);
         auto watching_lbl =
-            vbox.emplace<QLabel>("Requires the chatterino browser extension.")
+            vbox.emplace<QLabel>("Requires the Chatterino browser extension.")
                 .hidden();
 
         watching_lbl->setWordWrap(true);
@@ -116,17 +121,31 @@ SelectChannelDialog::SelectChannelDialog(QWidget *parent)
                              watching_lbl->setVisible(enabled);
                          });
 
+        // live_btn
+        auto live_btn =
+            vbox.emplace<QRadioButton>("Live").assign(&this->ui_.twitch.live);
+        auto live_lbl =
+            vbox.emplace<QLabel>("Shows when channels go live.").hidden();
+
+        live_lbl->setWordWrap(true);
+        live_btn->installEventFilter(&this->tabFilter_);
+
+        QObject::connect(live_btn.getElement(), &QRadioButton::toggled,
+                         [=](bool enabled) mutable {
+                             live_lbl->setVisible(enabled);
+                         });
+
         vbox->addStretch(1);
 
         // tabbing order
-        QWidget::setTabOrder(watching_btn.getElement(),
-                             channel_btn.getElement());
+        QWidget::setTabOrder(live_btn.getElement(), channel_btn.getElement());
         QWidget::setTabOrder(channel_btn.getElement(),
                              whispers_btn.getElement());
         QWidget::setTabOrder(whispers_btn.getElement(),
                              mentions_btn.getElement());
         QWidget::setTabOrder(mentions_btn.getElement(),
                              watching_btn.getElement());
+        QWidget::setTabOrder(watching_btn.getElement(), live_btn.getElement());
 
         // tab
         auto tab = notebook->addPage(obj.getElement());
@@ -189,7 +208,7 @@ SelectChannelDialog::SelectChannelDialog(QWidget *parent)
             outerBox->addRow("Server:", view);
         }
 
-        outerBox->addRow("Channel:", this->ui_.irc.channel = new QLineEdit);
+        outerBox->addRow("Channel: #", this->ui_.irc.channel = new QLineEdit);
 
         auto tab = notebook->addPage(obj.getElement());
         tab->setCustomTitle("Irc (Beta)");
@@ -207,39 +226,28 @@ SelectChannelDialog::SelectChannelDialog(QWidget *parent)
         layout.emplace<QHBoxLayout>().emplace<QDialogButtonBox>(this);
     {
         auto *button_ok = buttons->addButton(QDialogButtonBox::Ok);
-        QObject::connect(button_ok, &QPushButton::clicked, [=](bool) {
+        QObject::connect(button_ok, &QPushButton::clicked, [this](bool) {
             this->ok();
         });
         auto *button_cancel = buttons->addButton(QDialogButtonBox::Cancel);
-        QObject::connect(button_cancel, &QAbstractButton::clicked, [=](bool) {
-            this->close();
-        });
+        QObject::connect(button_cancel, &QAbstractButton::clicked,
+                         [this](bool) {
+                             this->close();
+                         });
     }
 
     this->setMinimumSize(300, 310);
     this->ui_.notebook->selectIndex(TAB_TWITCH);
     this->ui_.twitch.channel->setFocus();
 
-    // Shortcuts
-    createWindowShortcut(this, "Return", [=] {
-        this->ok();
-    });
-    createWindowShortcut(this, "Esc", [=] {
-        this->close();
-    });
-
     // restore ui state
     // fourtf: enable when releasing irc
     if (getSettings()->enableExperimentalIrc)
     {
         this->ui_.notebook->selectIndex(getSettings()->lastSelectChannelTab);
-        createWindowShortcut(this, "Ctrl+Tab", [=] {
-            this->ui_.notebook->selectNextTab();
-        });
-        createWindowShortcut(this, "CTRL+Shift+Tab", [=] {
-            this->ui_.notebook->selectPreviousTab();
-        });
     }
+
+    this->addShortcuts();
 
     this->ui_.irc.servers->getTableView()->selectRow(
         getSettings()->lastSelectIrcConn);
@@ -291,6 +299,11 @@ void SelectChannelDialog::setSelectedChannel(IndirectChannel _channel)
             this->ui_.twitch.whispers->setFocus();
         }
         break;
+        case Channel::Type::TwitchLive: {
+            this->ui_.notebook->selectIndex(TAB_TWITCH);
+            this->ui_.twitch.live->setFocus();
+        }
+        break;
         case Channel::Type::Irc: {
             this->ui_.notebook->selectIndex(TAB_IRC);
             this->ui_.irc.channel->setText(_channel.get()->getName());
@@ -339,20 +352,24 @@ IndirectChannel SelectChannelDialog::getSelectedChannel() const
         case TAB_TWITCH: {
             if (this->ui_.twitch.channel->isChecked())
             {
-                return app->twitch.server->getOrAddChannel(
+                return app->twitch->getOrAddChannel(
                     this->ui_.twitch.channelName->text().trimmed());
             }
             else if (this->ui_.twitch.watching->isChecked())
             {
-                return app->twitch.server->watchingChannel;
+                return app->twitch->watchingChannel;
             }
             else if (this->ui_.twitch.mentions->isChecked())
             {
-                return app->twitch.server->mentionsChannel;
+                return app->twitch->mentionsChannel;
             }
             else if (this->ui_.twitch.whispers->isChecked())
             {
-                return app->twitch.server->whispersChannel;
+                return app->twitch->whispersChannel;
+            }
+            else if (this->ui_.twitch.live->isChecked())
+            {
+                return app->twitch->liveChannel;
             }
         }
         break;
@@ -392,20 +409,16 @@ bool SelectChannelDialog::EventFilter::eventFilter(QObject *watched,
 
     if (event->type() == QEvent::FocusIn)
     {
-        widget->grabKeyboard();
-
         auto *radio = dynamic_cast<QRadioButton *>(watched);
         if (radio)
         {
             radio->setChecked(true);
+            return true;
         }
-
-        return true;
-    }
-    else if (event->type() == QEvent::FocusOut)
-    {
-        widget->releaseKeyboard();
-        return false;
+        else
+        {
+            return false;
+        }
     }
     else if (event->type() == QEvent::KeyPress)
     {
@@ -414,15 +427,22 @@ bool SelectChannelDialog::EventFilter::eventFilter(QObject *watched,
              event_key->key() == Qt::Key_Down) &&
             event_key->modifiers() == Qt::NoModifier)
         {
+            // Tab has been pressed, focus next entry in list
+
             if (widget == this->dialog->ui_.twitch.channelName)
             {
+                // Special case for when current selection is the "Channel" entry's edit box since the Edit box actually has the focus
                 this->dialog->ui_.twitch.whispers->setFocus();
                 return true;
             }
-            else
+            else if (widget == this->dialog->ui_.twitch.live)
             {
-                widget->nextInFocusChain()->setFocus();
+                // Special case for when current selection is "Live" (the last entry in the list), next wrap is Channel, but we need to select its edit box
+                this->dialog->ui_.twitch.channel->setFocus();
+                return true;
             }
+
+            widget->nextInFocusChain()->setFocus();
             return true;
         }
         else if (((event_key->key() == Qt::Key_Tab ||
@@ -431,14 +451,12 @@ bool SelectChannelDialog::EventFilter::eventFilter(QObject *watched,
                  ((event_key->key() == Qt::Key_Up) &&
                   event_key->modifiers() == Qt::NoModifier))
         {
+            // Shift+Tab has been pressed, focus previous entry in list
+
             if (widget == this->dialog->ui_.twitch.channelName)
             {
-                this->dialog->ui_.twitch.watching->setFocus();
-                return true;
-            }
-            else if (widget == this->dialog->ui_.twitch.whispers)
-            {
-                this->dialog->ui_.twitch.channel->setFocus();
+                // Special case for when current selection is the "Channel" entry's edit box since the Edit box actually has the focus
+                this->dialog->ui_.twitch.live->setFocus();
                 return true;
             }
 
@@ -483,6 +501,82 @@ void SelectChannelDialog::themeChangedEvent()
         this->setStyleSheet(
             "QRadioButton { color: #fff } QLabel { color: #fff }");
     }
+}
+
+void SelectChannelDialog::addShortcuts()
+{
+    HotkeyController::HotkeyMap actions{
+        {"accept",
+         [this](std::vector<QString>) -> QString {
+             this->ok();
+             return "";
+         }},
+        {"reject",
+         [this](std::vector<QString>) -> QString {
+             this->close();
+             return "";
+         }},
+
+        // these make no sense, so they aren't implemented
+        {"scrollPage", nullptr},
+        {"search", nullptr},
+        {"delete", nullptr},
+    };
+
+    if (getSettings()->enableExperimentalIrc)
+    {
+        actions.insert(
+            {"openTab", [this](std::vector<QString> arguments) -> QString {
+                 if (arguments.size() == 0)
+                 {
+                     qCWarning(chatterinoHotkeys)
+                         << "openTab shortcut called without arguments. "
+                            "Takes only "
+                            "one argument: tab specifier";
+                     return "openTab shortcut called without arguments. "
+                            "Takes only one argument: tab specifier";
+                 }
+                 auto target = arguments.at(0);
+                 if (target == "last")
+                 {
+                     this->ui_.notebook->selectLastTab();
+                 }
+                 else if (target == "next")
+                 {
+                     this->ui_.notebook->selectNextTab();
+                 }
+                 else if (target == "previous")
+                 {
+                     this->ui_.notebook->selectPreviousTab();
+                 }
+                 else
+                 {
+                     bool ok;
+                     int result = target.toInt(&ok);
+                     if (ok)
+                     {
+                         this->ui_.notebook->selectIndex(result);
+                     }
+                     else
+                     {
+                         qCWarning(chatterinoHotkeys)
+                             << "Invalid argument for openTab shortcut";
+                         return QString("Invalid argument for openTab "
+                                        "shortcut: \"%1\". Use \"last\", "
+                                        "\"next\", \"previous\" or an integer.")
+                             .arg(target);
+                     }
+                 }
+                 return "";
+             }});
+    }
+    else
+    {
+        actions.emplace("openTab", nullptr);
+    }
+
+    this->shortcuts_ = getApp()->hotkeys->shortcutsForCategory(
+        HotkeyCategory::PopupWindow, actions, this);
 }
 
 }  // namespace chatterino

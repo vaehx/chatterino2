@@ -1,9 +1,10 @@
 #pragma once
 
-#include <QWidget>
 #include <boost/optional.hpp>
 #include <pajlada/signals/signal.hpp>
 #include <pajlada/signals/signalholder.hpp>
+#include <QShortcut>
+#include <QWidget>
 
 namespace chatterino {
 
@@ -40,10 +41,18 @@ protected:
 
     virtual void scaleChangedEvent(float newScale);
     virtual void themeChangedEvent();
+    [[deprecated("addShortcuts called without overriding it")]] virtual void
+        addShortcuts()
+    {
+    }
 
     void setScale(float value);
 
     Theme *theme;
+
+    std::vector<QShortcut *> shortcuts_;
+    void clearShortcuts();
+    pajlada::Signals::SignalHolder signalHolder_;
 
 private:
     float scale_{1.f};
@@ -51,8 +60,6 @@ private:
     QSize scaleIndependantSize_;
 
     std::vector<BaseWidget *> widgets_;
-
-    pajlada::Signals::SignalHolder signalHolder_;
 
     friend class BaseWindow;
 };

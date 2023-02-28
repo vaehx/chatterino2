@@ -1,16 +1,19 @@
 #include "FiltersPage.hpp"
 
+#include "Application.hpp"
 #include "controllers/filters/FilterModel.hpp"
+#include "controllers/filters/FilterRecord.hpp"
 #include "singletons/Settings.hpp"
 #include "singletons/WindowManager.hpp"
 #include "util/LayoutCreator.hpp"
-#include "widgets/Window.hpp"
 #include "widgets/dialogs/ChannelFilterEditorDialog.hpp"
 #include "widgets/helper/EditableModelView.hpp"
+#include "widgets/Window.hpp"
 
+#include <QHeaderView>
 #include <QTableView>
 
-#define FILTERS_DOCUMENTATION "https://wiki.chatterino.com/Filters/"
+#define FILTERS_DOCUMENTATION "https://wiki.chatterino.com/Filters"
 
 namespace chatterino {
 
@@ -86,7 +89,7 @@ void FiltersPage::tableCellClicked(const QModelIndex &clicked,
     // valid column
     if (clicked.column() == 2)
     {
-        QMessageBox popup;
+        QMessageBox popup(this->window());
 
         filterparser::FilterParser f(
             view->getModel()->data(clicked.siblingAtColumn(1)).toString());

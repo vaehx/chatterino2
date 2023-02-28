@@ -1,15 +1,17 @@
 #pragma once
 
+#include "common/FlagsEnum.hpp"
+#include "messages/Link.hpp"
+
+#include <boost/noncopyable.hpp>
+#include <pajlada/signals/signalholder.hpp>
+#include <QPen>
 #include <QPoint>
 #include <QRect>
 #include <QString>
-#include <boost/noncopyable.hpp>
-#include <climits>
 
-#include "common/FlagsEnum.hpp"
-#include "messages/Link.hpp"
-#include "messages/MessageColor.hpp"
-#include "messages/MessageElement.hpp"
+#include <climits>
+#include <cstdint>
 
 class QPainter;
 
@@ -18,12 +20,15 @@ class MessageElement;
 class Image;
 using ImagePtr = std::shared_ptr<Image>;
 enum class FontStyle : uint8_t;
+enum class MessageElementFlag : int64_t;
 
 class MessageLayoutElement : boost::noncopyable
 {
 public:
     MessageLayoutElement(MessageElement &creator_, const QSize &size);
     virtual ~MessageLayoutElement();
+
+    bool reversedNeutral = false;
 
     const QRect &getRect() const;
     MessageElement &getCreator() const;
@@ -36,8 +41,8 @@ public:
     MessageLayoutElement *setLink(const Link &link_);
     MessageLayoutElement *setText(const QString &text_);
 
-    virtual void addCopyTextToString(QString &str, int from = 0,
-                                     int to = INT_MAX) const = 0;
+    virtual void addCopyTextToString(QString &str, uint32_t from = 0,
+                                     uint32_t to = UINT32_MAX) const = 0;
     virtual int getSelectionIndexCount() const = 0;
     virtual void paint(QPainter &painter) = 0;
     virtual void paintAnimated(QPainter &painter, int yOffset) = 0;
@@ -67,8 +72,8 @@ public:
                        const QSize &size);
 
 protected:
-    void addCopyTextToString(QString &str, int from = 0,
-                             int to = INT_MAX) const override;
+    void addCopyTextToString(QString &str, uint32_t from = 0,
+                             uint32_t to = UINT32_MAX) const override;
     int getSelectionIndexCount() const override;
     void paint(QPainter &painter) override;
     void paintAnimated(QPainter &painter, int yOffset) override;
@@ -91,6 +96,23 @@ private:
     QColor color_;
 };
 
+class ImageWithCircleBackgroundLayoutElement : public ImageLayoutElement
+{
+public:
+    ImageWithCircleBackgroundLayoutElement(MessageElement &creator,
+                                           ImagePtr image,
+                                           const QSize &imageSize, QColor color,
+                                           int padding);
+
+protected:
+    void paint(QPainter &painter) override;
+
+private:
+    const QColor color_;
+    const QSize imageSize_;
+    const int padding_;
+};
+
 // TEXT
 class TextLayoutElement : public MessageLayoutElement
 {
@@ -102,8 +124,8 @@ public:
     void listenToLinkChanges();
 
 protected:
-    void addCopyTextToString(QString &str, int from = 0,
-                             int to = INT_MAX) const override;
+    void addCopyTextToString(QString &str, uint32_t from = 0,
+                             uint32_t to = UINT32_MAX) const override;
     int getSelectionIndexCount() const override;
     void paint(QPainter &painter) override;
     void paintAnimated(QPainter &painter, int yOffset) override;
@@ -114,7 +136,7 @@ protected:
     FontStyle style_;
     float scale_;
 
-    std::vector<pajlada::Signals::ScopedConnection> managedConnections_;
+    pajlada::Signals::SignalHolder managedConnections_;
 };
 
 // TEXT ICON
@@ -126,8 +148,8 @@ public:
                           const QString &line2, float scale, const QSize &size);
 
 protected:
-    void addCopyTextToString(QString &str, int from = 0,
-                             int to = INT_MAX) const override;
+    void addCopyTextToString(QString &str, uint32_t from = 0,
+                             uint32_t to = UINT32_MAX) const override;
     int getSelectionIndexCount() const override;
     void paint(QPainter &painter) override;
     void paintAnimated(QPainter &painter, int yOffset) override;
@@ -140,25 +162,25 @@ private:
     QString line2;
 };
 
-struct PajSegment {
-    QString text;
-    QColor color;
-};
-
-// TEXT
-class MultiColorTextLayoutElement : public TextLayoutElement
+class ReplyCurveLayoutElement : public MessageLayoutElement
 {
 public:
-    MultiColorTextLayoutElement(MessageElement &creator_, QString &text,
-                                const QSize &size,
-                                std::vector<PajSegment> segments,
-                                FontStyle style_, float scale_);
+    ReplyCurveLayoutElement(MessageElement &creator, int width, float thickness,
+                            float radius, float neededMargin);
 
 protected:
     void paint(QPainter &painter) override;
+    void paintAnimated(QPainter &painter, int yOffset) override;
+    int getMouseOverIndex(const QPoint &abs) const override;
+    int getXFromIndex(int index) override;
+    void addCopyTextToString(QString &str, uint32_t from = 0,
+                             uint32_t to = UINT32_MAX) const override;
+    int getSelectionIndexCount() const override;
 
 private:
-    std::vector<PajSegment> segments_;
+    const QPen pen_;
+    const float radius_;
+    const float neededMargin_;
 };
 
 }  // namespace chatterino

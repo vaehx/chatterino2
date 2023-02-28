@@ -1,15 +1,15 @@
 #include "singletons/Paths.hpp"
 
+#include "common/Modes.hpp"
 #include "singletons/Settings.hpp"
+#include "util/CombinePath.hpp"
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDir>
 #include <QStandardPaths>
-#include <cassert>
 
-#include "common/Modes.hpp"
-#include "util/CombinePath.hpp"
+#include <cassert>
 
 using namespace std::literals;
 
@@ -104,8 +104,8 @@ void Paths::initRootDirectory()
                                      path.toStdString() + "\"");
         }
 
-// create directory Chatterino2 instead of chatterino on windows because the
-// ladder one is takes by chatterino 1 already
+// create directory Chatterino2 instead of Chatterino on windows because the
+// ladder one is takes by Chatterino 1 already
 #ifdef Q_OS_WIN
         path.replace("chatterino", "Chatterino");
 
@@ -141,6 +141,7 @@ void Paths::initSubDirectories()
     this->messageLogDirectory = makePath("Logs");
     this->miscDirectory = makePath("Misc");
     this->twitchProfileAvatars = makePath("ProfileAvatars");
+    this->crashdumpDirectory = makePath("Crashes");
     //QDir().mkdir(this->twitchProfileAvatars + "/twitch");
 }
 
