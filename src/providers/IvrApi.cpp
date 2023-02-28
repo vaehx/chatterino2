@@ -1,5 +1,6 @@
 #include "IvrApi.hpp"
 
+#include "common/NetworkResult.hpp"
 #include "common/Outcome.hpp"
 #include "common/QLogging.hpp"
 
@@ -37,12 +38,10 @@ void IvrApi::getBulkEmoteSets(QString emoteSetList,
                               ResultCallback<QJsonArray> successCallback,
                               IvrFailureCallback failureCallback)
 {
-    assert(!emoteSetList.isEmpty());
-
     QUrlQuery urlQuery;
     urlQuery.addQueryItem("set_id", emoteSetList);
 
-    this->makeRequest("twitch/emoteset", urlQuery)
+    this->makeRequest("twitch/emotes/sets", urlQuery)
         .onSuccess([successCallback, failureCallback](auto result) -> Outcome {
             auto root = result.parseJsonArray();
 
@@ -63,7 +62,7 @@ NetworkRequest IvrApi::makeRequest(QString url, QUrlQuery urlQuery)
 {
     assert(!url.startsWith("/"));
 
-    const QString baseUrl("https://api.ivr.fi/");
+    const QString baseUrl("https://api.ivr.fi/v2/");
     QUrl fullUrl(baseUrl + url);
     fullUrl.setQuery(urlQuery);
 

@@ -1,10 +1,10 @@
 [requires]
-openssl/1.1.1d
-boost/1.75.0
+openssl/1.1.1s
+boost/1.80.0
 
 [generators]
-qmake
-cmake
+CMakeDeps
+CMakeToolchain
 
 [options]
 openssl:shared=True

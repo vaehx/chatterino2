@@ -1,9 +1,9 @@
 #pragma once
 
+#include <QString>
+
 #include <functional>
 #include <vector>
-
-#include <QString>
 
 class QNetworkReply;
 
@@ -23,6 +23,13 @@ enum class NetworkRequestType {
     Put,
     Delete,
     Patch,
+};
+const static std::vector<QString> networkRequestTypes{
+    "GET",     //
+    "POST",    //
+    "PUT",     //
+    "DELETE",  //
+    "PATCH",   //
 };
 
 // parseHeaderList takes a list of headers in string form,

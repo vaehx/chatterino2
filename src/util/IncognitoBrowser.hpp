@@ -1,10 +1,10 @@
 #pragma once
 
-#include <QtGlobal>
+#include <QString>
 
 namespace chatterino {
 
 bool supportsIncognitoLinks();
-void openLinkIncognito(const QString &link);
+bool openLinkIncognito(const QString &link);
 
 }  // namespace chatterino

@@ -2,13 +2,14 @@
 
 #include "widgets/BaseWindow.hpp"
 
+#include <pajlada/settings/setting.hpp>
+#include <QFrame>
 #include <QPushButton>
 #include <QStackedLayout>
 #include <QVBoxLayout>
 #include <QWidget>
+
 #include <functional>
-#include <pajlada/settings/setting.hpp>
-#include "widgets/helper/SettingsDialogTab.hpp"
 
 class QLineEdit;
 
@@ -17,6 +18,7 @@ namespace chatterino {
 class SettingsPage;
 class SettingsDialogTab;
 class ModerationPage;
+enum class SettingsTabId;
 
 class PageHeader : public QFrame
 {
@@ -58,6 +60,8 @@ private:
 
     void onOkClicked();
     void onCancelClicked();
+    void addShortcuts() override;
+    void setSearchPlaceholderText();
 
     struct {
         QWidget *tabContainerContainer{};

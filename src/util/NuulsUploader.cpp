@@ -2,10 +2,13 @@
 
 #include "common/Env.hpp"
 #include "common/NetworkRequest.hpp"
+#include "common/NetworkResult.hpp"
+#include "common/QLogging.hpp"
 #include "providers/twitch/TwitchMessageBuilder.hpp"
 #include "singletons/Paths.hpp"
 #include "singletons/Settings.hpp"
 #include "util/CombinePath.hpp"
+#include "widgets/helper/ResizingTextEdit.hpp"
 
 #include <QBuffer>
 #include <QHttpMultiPart>
@@ -14,7 +17,6 @@
 #include <QMimeDatabase>
 #include <QMutex>
 #include <QSaveFile>
-#include "common/QLogging.hpp"
 
 #define UPLOAD_DELAY 2000
 // Delay between uploads in milliseconds
@@ -105,12 +107,15 @@ QString getJSONValue(QJsonValue responseJson, QString jsonPattern)
 
 QString getLinkFromResponse(NetworkResult response, QString pattern)
 {
-    QRegExp regExp("\\{(.+)\\}");
-    regExp.setMinimal(true);
-    while (regExp.indexIn(pattern) != -1)
+    QRegularExpression regExp("{(.+)}",
+                              QRegularExpression::InvertedGreedinessOption);
+    auto match = regExp.match(pattern);
+
+    while (match.hasMatch())
     {
-        pattern.replace(regExp.cap(0),
-                        getJSONValue(response.parseJson(), regExp.cap(1)));
+        pattern.replace(match.captured(0),
+                        getJSONValue(response.parseJson(), match.captured(1)));
+        match = regExp.match(pattern);
     }
     return pattern;
 }
@@ -201,9 +206,32 @@ void uploadImageToNuuls(RawImageData imageData, ChannelPtr channel,
             return Success;
         })
         .onError([channel](NetworkResult result) -> bool {
-            channel->addMessage(makeSystemMessage(
+            auto errorMessage =
                 QString("An error happened while uploading your image: %1")
-                    .arg(result.status())));
+                    .arg(result.status());
+
+            // Try to read more information from the result body
+            auto obj = result.parseJson();
+            if (!obj.isEmpty())
+            {
+                auto apiCode = obj.value("code");
+                if (!apiCode.isUndefined())
+                {
+                    auto codeString = apiCode.toVariant().toString();
+                    codeString.truncate(20);
+                    errorMessage += QString(" - code: %1").arg(codeString);
+                }
+
+                auto apiError = obj.value("error").toString();
+                if (!apiError.isEmpty())
+                {
+                    apiError.truncate(300);
+                    errorMessage +=
+                        QString(" - error: %1").arg(apiError.trimmed());
+                }
+            }
+
+            channel->addMessage(makeSystemMessage(errorMessage));
             uploadMutex.unlock();
             return true;
         })

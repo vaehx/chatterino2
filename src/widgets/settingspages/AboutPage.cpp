@@ -8,6 +8,7 @@
 #include "widgets/BasePopup.hpp"
 #include "widgets/helper/SignalLabel.hpp"
 
+#include <QFile>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QLabel>
@@ -16,6 +17,11 @@
 #include <QVBoxLayout>
 
 #define PIXMAP_WIDTH 500
+
+#define LINK_CHATTERINO_WIKI "https://wiki.chatterino.com"
+#define LINK_DONATE "https://streamelements.com/fourtf/tip"
+#define LINK_CHATTERINO_FEATURES "https://chatterino.com/#features"
+#define LINK_CHATTERINO_DISCORD "https://discord.gg/7Y5AYhAK4z"
 
 namespace chatterino {
 
@@ -41,61 +47,31 @@ AboutPage::AboutPage()
         }
         logo->setScaledContents(true);
 
-        // this does nothing
-        //        QPalette palette;
-        //        palette.setColor(QPalette::Text, Qt::white);
-        //        palette.setColor(QPalette::Link, "#a5cdff");
-        //        palette.setColor(QPalette::LinkVisited, "#a5cdff");
-
-        /*auto xd = layout.emplace<QGroupBox>("Created by...");
-        {
-            auto created = xd.emplace<QLabel>();
-            {
-                created->setText("Created by <a
-        href=\"https://github.com/fourtf\">fourtf</a><br>" "with big help from
-        pajlada."); created->setTextFormat(Qt::RichText);
-                created->setTextInteractionFlags(Qt::TextBrowserInteraction |
-                                                 Qt::LinksAccessibleByKeyboard |
-                                                 Qt::LinksAccessibleByKeyboard);
-                created->setOpenExternalLinks(true);
-                //        created->setPalette(palette);
-            }
-
-            //            auto github = xd.emplace<QLabel>();
-            //            {
-            //                github->setText(
-            //                    "<a
-        href=\"https://github.com/fourtf/chatterino2\">Chatterino on
-            //                    Github</a>");
-            //                github->setTextFormat(Qt::RichText);
-            // github->setTextInteractionFlags(Qt::TextBrowserInteraction |
-            // Qt::LinksAccessibleByKeyboard |
-            // Qt::LinksAccessibleByKeyboard);
-            //                github->setOpenExternalLinks(true);
-            //                //        github->setPalette(palette);
-            //            }
-        }*/
-
+        // Version
         auto versionInfo = layout.emplace<QGroupBox>("Version");
         {
+            auto vbox = versionInfo.emplace<QVBoxLayout>();
             auto version = Version::instance();
-            QString text = QString("%1 (commit %2%3)")
-                               .arg(version.fullVersion())
-                               .arg("<a "
-                                    "href=\"https://github.com/Chatterino/"
-                                    "chatterino2/commit/" +
-                                    version.commitHash() + "\">" +
-                                    version.commitHash() + "</a>")
-                               .arg(Modes::instance().isNightly
-                                        ? ", " + version.dateOfBuild()
-                                        : "");
 
-            auto versionLabel = versionInfo.emplace<QLabel>(text);
-            versionLabel->setOpenExternalLinks(true);
-            versionLabel->setTextInteractionFlags(Qt::TextSelectableByMouse |
-                                                  Qt::LinksAccessibleByMouse);
+            auto label = vbox.emplace<QLabel>(version.buildString() + "<br>" +
+                                              version.runningString());
+            label->setOpenExternalLinks(true);
+            label->setTextInteractionFlags(Qt::TextBrowserInteraction);
         }
 
+        // About Chatterino
+        auto aboutChatterino = layout.emplace<QGroupBox>("About Chatterino...");
+        {
+            auto l = aboutChatterino.emplace<QVBoxLayout>();
+
+            // clang-format off
+            l.emplace<QLabel>("Chatterino Wiki can be found <a href=\"" LINK_CHATTERINO_WIKI "\">here</a>")->setOpenExternalLinks(true);
+            l.emplace<QLabel>("All about Chatterino's <a href=\"" LINK_CHATTERINO_FEATURES "\">features</a>")->setOpenExternalLinks(true);
+            l.emplace<QLabel>("Join the official Chatterino <a href=\"" LINK_CHATTERINO_DISCORD "\">Discord</a>")->setOpenExternalLinks(true);
+            // clang-format on
+        }
+
+        // Licenses
         auto licenses =
             layout.emplace<QGroupBox>("Open source software used...");
         {
@@ -110,7 +86,7 @@ AboutPage::AboutPage()
                        ":/licenses/libcommuni_BSD3.txt");
             addLicense(form.getElement(), "OpenSSL", "https://www.openssl.org/",
                        ":/licenses/openssl.txt");
-            addLicense(form.getElement(), "RapidJson", "http://rapidjson.org/",
+            addLicense(form.getElement(), "RapidJson", "https://rapidjson.org/",
                        ":/licenses/rapidjson.txt");
             addLicense(form.getElement(), "Pajlada/Settings",
                        "https://github.com/pajlada/settings",
@@ -121,14 +97,31 @@ AboutPage::AboutPage()
             addLicense(form.getElement(), "Websocketpp",
                        "https://www.zaphoyd.com/websocketpp/",
                        ":/licenses/websocketpp.txt");
+#ifndef NO_QTKEYCHAIN
             addLicense(form.getElement(), "QtKeychain",
                        "https://github.com/frankosterfeld/qtkeychain",
                        ":/licenses/qtkeychain.txt");
+#endif
             addLicense(form.getElement(), "lrucache",
                        "https://github.com/lamerman/cpp-lru-cache",
                        ":/licenses/lrucache.txt");
+            addLicense(form.getElement(), "magic_enum",
+                       "https://github.com/Neargye/magic_enum",
+                       ":/licenses/magic_enum.txt");
+            addLicense(form.getElement(), "semver",
+                       "https://github.com/Neargye/semver",
+                       ":/licenses/semver.txt");
+            addLicense(form.getElement(), "miniaudio",
+                       "https://github.com/mackron/miniaudio",
+                       ":/licenses/miniaudio.txt");
+#ifdef CHATTERINO_WITH_CRASHPAD
+            addLicense(form.getElement(), "sentry-crashpad",
+                       "https://github.com/getsentry/crashpad",
+                       ":/licenses/crashpad.txt");
+#endif
         }
 
+        // Attributions
         auto attributions = layout.emplace<QGroupBox>("Attributions...");
         {
             auto l = attributions.emplace<QVBoxLayout>();
@@ -140,7 +133,6 @@ AboutPage::AboutPage()
             l.emplace<QLabel>("Google emojis provided by <a href=\"https://google.com\">Google</a>")->setOpenExternalLinks(true);
             l.emplace<QLabel>("Emoji datasource provided by <a href=\"https://www.iamcal.com/\">Cal Henderson</a>"
                               "(<a href=\"https://github.com/iamcal/emoji-data/blob/master/LICENSE\">show license</a>)")->setOpenExternalLinks(true);
-            l.emplace<QLabel>("Twitch emote data provided by <a href=\"https://twitchemotes.com/\">twitchemotes.com</a> through the <a href=\"https://github.com/Chatterino/api\">Chatterino API</a>")->setOpenExternalLinks(true);
             // clang-format on
         }
 
@@ -153,7 +145,11 @@ AboutPage::AboutPage()
             contributorsFile.open(QFile::ReadOnly);
 
             QTextStream stream(&contributorsFile);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+            // Default encoding of QTextStream is already UTF-8
+#else
             stream.setCodec("UTF-8");
+#endif
 
             QString line;
 
@@ -213,18 +209,6 @@ AboutPage::AboutPage()
         }
     }
 
-    auto buildInfo = QStringList();
-    buildInfo += "Qt " QT_VERSION_STR;
-#ifdef USEWINSDK
-    buildInfo += "Windows SDK";
-#endif
-#ifdef _MSC_FULL_VER
-    buildInfo += "MSVC " + QString::number(_MSC_FULL_VER, 10);
-#endif
-
-    auto buildText = QString("Built with " + buildInfo.join(", "));
-    layout.emplace<QLabel>(buildText);
-
     layout->addStretch(1);
 }
 
@@ -236,8 +220,9 @@ void AboutPage::addLicense(QFormLayout *form, const QString &name,
     auto *b = new QLabel("<a href=\"" + licenseLink + "\">show license</a>");
     QObject::connect(
         b, &QLabel::linkActivated, [parent = this, name, licenseLink] {
-            auto window =
-                new BasePopup(BaseWindow::Flags::EnableCustomFrame, parent);
+            auto window = new BasePopup({BaseWindow::Flags::EnableCustomFrame,
+                                         BaseWindow::DisableLayoutSave},
+                                        parent);
             window->setWindowTitle("Chatterino - License for " + name);
             window->setAttribute(Qt::WA_DeleteOnClose);
             auto layout = new QVBoxLayout();

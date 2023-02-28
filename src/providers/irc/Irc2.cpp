@@ -1,15 +1,19 @@
 #include "Irc2.hpp"
 
-#include <pajlada/serialize.hpp>
 #include "common/Credentials.hpp"
 #include "common/SignalVectorModel.hpp"
+#include "providers/irc/IrcChannel2.hpp"
+#include "providers/irc/IrcServer.hpp"
 #include "singletons/Paths.hpp"
 #include "util/CombinePath.hpp"
 #include "util/RapidjsonHelpers.hpp"
 #include "util/StandardItemHelper.hpp"
 
+#include <pajlada/serialize.hpp>
 #include <QSaveFile>
 #include <QtConcurrent>
+
+#include <unordered_set>
 
 namespace chatterino {
 

@@ -1,7 +1,11 @@
 #include "ChannelChatters.hpp"
 
+#include "common/Channel.hpp"
 #include "messages/Message.hpp"
 #include "messages/MessageBuilder.hpp"
+#include "providers/twitch/TwitchMessageBuilder.hpp"
+
+#include <QColor>
 
 namespace chatterino {
 
@@ -11,14 +15,15 @@ ChannelChatters::ChannelChatters(Channel &channel)
 {
 }
 
-SharedAccessGuard<const UsernameSet> ChannelChatters::accessChatters() const
+SharedAccessGuard<const ChatterSet> ChannelChatters::accessChatters() const
 {
     return this->chatters_.accessConst();
 }
 
 void ChannelChatters::addRecentChatter(const QString &user)
 {
-    this->chatters_.access()->insert(user);
+    auto chatters = this->chatters_.access();
+    chatters->addRecentChatter(user);
 }
 
 void ChannelChatters::addJoinedUser(const QString &user)
@@ -32,12 +37,15 @@ void ChannelChatters::addJoinedUser(const QString &user)
 
         QTimer::singleShot(500, &this->lifetimeGuard_, [this] {
             auto joinedUsers = this->joinedUsers_.access();
+            joinedUsers->sort();
 
-            MessageBuilder builder(systemMessage,
-                                   "Users joined: " + joinedUsers->join(", "));
+            MessageBuilder builder;
+            TwitchMessageBuilder::listOfUsersSystemMessage(
+                "Users joined:", *joinedUsers, &this->channel_, &builder);
             builder->flags.set(MessageFlag::Collapsed);
-            joinedUsers->clear();
             this->channel_.addMessage(builder.release());
+
+            joinedUsers->clear();
             this->joinedUsersMergeQueued_ = false;
         });
     }
@@ -54,21 +62,31 @@ void ChannelChatters::addPartedUser(const QString &user)
 
         QTimer::singleShot(500, &this->lifetimeGuard_, [this] {
             auto partedUsers = this->partedUsers_.access();
+            partedUsers->sort();
 
-            MessageBuilder builder(systemMessage,
-                                   "Users parted: " + partedUsers->join(", "));
+            MessageBuilder builder;
+            TwitchMessageBuilder::listOfUsersSystemMessage(
+                "Users parted:", *partedUsers, &this->channel_, &builder);
             builder->flags.set(MessageFlag::Collapsed);
             this->channel_.addMessage(builder.release());
-            partedUsers->clear();
 
+            partedUsers->clear();
             this->partedUsersMergeQueued_ = false;
         });
     }
 }
 
-void ChannelChatters::setChatters(UsernameSet &&set)
+void ChannelChatters::updateOnlineChatters(
+    const std::unordered_set<QString> &usernames)
 {
-    this->chatters_.access()->merge(std::move(set));
+    auto chatters = this->chatters_.access();
+    chatters->updateOnlineChatters(usernames);
+}
+
+size_t ChannelChatters::colorsSize() const
+{
+    auto size = this->chatterColors_.access()->size();
+    return size;
 }
 
 const QColor ChannelChatters::getUserColor(const QString &user)

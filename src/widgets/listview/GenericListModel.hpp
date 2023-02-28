@@ -1,4 +1,11 @@
+#pragma once
+
 #include "widgets/listview/GenericListItem.hpp"
+
+#include <QAbstractListModel>
+#include <QWidget>
+
+#include <memory>
 
 namespace chatterino {
 

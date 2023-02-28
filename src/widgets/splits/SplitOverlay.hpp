@@ -1,16 +1,16 @@
 #pragma once
 
+#include "widgets/BaseWidget.hpp"
+
+#include <pajlada/signals/signalholder.hpp>
 #include <QGridLayout>
 #include <QPushButton>
-
-#include "pajlada/signals/signalholder.hpp"
-#include "widgets/BaseWidget.hpp"
 
 namespace chatterino {
 
 class Split;
 
-class SplitOverlay : public BaseWidget, pajlada::Signals::SignalHolder
+class SplitOverlay : public BaseWidget
 {
 public:
     explicit SplitOverlay(Split *parent = nullptr);
@@ -51,6 +51,8 @@ private:
     QPushButton *up_;
     QPushButton *right_;
     QPushButton *down_;
+
+    pajlada::Signals::SignalHolder signalHolder_;
 
     friend class ButtonEventFilter;
 };

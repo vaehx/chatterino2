@@ -39,6 +39,8 @@
 #include "widgets/helper/QColorPicker.hpp"
 
 #include <qdrawutil.h>
+#include <QMouseEvent>
+#include <QPainter>
 
 /*
  * These classes are literally copied from the Qt source.

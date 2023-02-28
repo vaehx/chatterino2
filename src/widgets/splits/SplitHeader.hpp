@@ -2,12 +2,15 @@
 
 #include "widgets/BaseWidget.hpp"
 
-#include <QMenu>
-#include <QPoint>
-#include <memory>
+#include <boost/signals2.hpp>
 #include <pajlada/settings/setting.hpp>
 #include <pajlada/signals/connection.hpp>
 #include <pajlada/signals/signalholder.hpp>
+#include <QElapsedTimer>
+#include <QMenu>
+#include <QPoint>
+
+#include <memory>
 #include <vector>
 
 namespace chatterino {
@@ -17,12 +20,12 @@ class EffectLabel;
 class Label;
 class Split;
 
-class SplitHeader final : public BaseWidget, pajlada::Signals::SignalHolder
+class SplitHeader final : public BaseWidget
 {
     Q_OBJECT
 
 public:
-    explicit SplitHeader(Split *_chatWidget);
+    explicit SplitHeader(Split *split);
 
     void setAddButtonVisible(bool value);
     void setViewersButtonVisible(bool value);
@@ -32,16 +35,20 @@ public:
     void updateRoomModes();
 
 protected:
-    virtual void scaleChangedEvent(float) override;
-    virtual void themeChangedEvent() override;
+    void scaleChangedEvent(float scale) override;
+    void themeChangedEvent() override;
 
-    virtual void paintEvent(QPaintEvent *) override;
-    virtual void mousePressEvent(QMouseEvent *event) override;
-    virtual void mouseReleaseEvent(QMouseEvent *event) override;
-    virtual void mouseMoveEvent(QMouseEvent *event) override;
-    virtual void enterEvent(QEvent *) override;
-    virtual void leaveEvent(QEvent *event) override;
-    virtual void mouseDoubleClickEvent(QMouseEvent *event) override;
+    void paintEvent(QPaintEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    void enterEvent(QEnterEvent *event) override;
+#else
+    void enterEvent(QEvent *event) override;
+#endif
+    void leaveEvent(QEvent *event) override;
+    void mouseDoubleClickEvent(QMouseEvent *event) override;
 
 private:
     void initializeLayout();
@@ -62,6 +69,8 @@ private:
     bool isLive_{false};
     QString thumbnail_;
     QElapsedTimer lastThumbnail_;
+    std::chrono::steady_clock::time_point lastReloadedChannelEmotes_;
+    std::chrono::steady_clock::time_point lastReloadedSubEmotes_;
 
     // ui
     Button *dropdownButton_{};
@@ -79,11 +88,11 @@ private:
 
     // signals
     pajlada::Signals::NoArgSignal modeUpdateRequested_;
-    std::vector<pajlada::Signals::ScopedConnection> managedConnections_;
-    std::vector<pajlada::Signals::ScopedConnection> channelConnections_;
+    pajlada::Signals::SignalHolder managedConnections_;
+    pajlada::Signals::SignalHolder channelConnections_;
+    std::vector<boost::signals2::scoped_connection> bSignals_;
 
 public slots:
-    void moveSplit();
     void reloadChannelEmotes();
     void reloadSubscriberEmotes();
     void reconnect();

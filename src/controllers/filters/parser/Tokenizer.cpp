@@ -1,4 +1,5 @@
 #include "controllers/filters/parser/Tokenizer.hpp"
+
 #include "common/QLogging.hpp"
 
 namespace filterparser {
@@ -8,9 +9,9 @@ Tokenizer::Tokenizer(const QString &text)
     QRegularExpressionMatchIterator i = tokenRegex.globalMatch(text);
     while (i.hasNext())
     {
-        auto text = i.next().captured();
-        this->tokens_ << text;
-        this->tokenTypes_ << this->tokenize(text);
+        auto capturedText = i.next().captured();
+        this->tokens_ << capturedText;
+        this->tokenTypes_ << this->tokenize(capturedText);
     }
 }
 

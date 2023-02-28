@@ -3,10 +3,11 @@
 #include "Application.hpp"
 #include "common/Args.hpp"
 #include "controllers/commands/CommandController.hpp"
-#include "singletons/Resources.hpp"
+#include "controllers/hotkeys/HotkeyController.hpp"
+#include "singletons/Settings.hpp"
 #include "util/LayoutCreator.hpp"
-#include "util/Shortcut.hpp"
 #include "widgets/helper/Button.hpp"
+#include "widgets/helper/SettingsDialogTab.hpp"
 #include "widgets/settingspages/AboutPage.hpp"
 #include "widgets/settingspages/AccountsPage.hpp"
 #include "widgets/settingspages/CommandPage.hpp"
@@ -17,19 +18,26 @@
 #include "widgets/settingspages/IgnoresPage.hpp"
 #include "widgets/settingspages/KeyboardSettingsPage.hpp"
 #include "widgets/settingspages/ModerationPage.hpp"
+#include "widgets/settingspages/NicknamesPage.hpp"
 #include "widgets/settingspages/NotificationPage.hpp"
 
 #include <QDialogButtonBox>
+#include <QFile>
 #include <QLineEdit>
 
 namespace chatterino {
 
 SettingsDialog::SettingsDialog(QWidget *parent)
-    : BaseWindow(
-          {BaseWindow::Flags::DisableCustomScaling, BaseWindow::Flags::Dialog},
-          parent)
+    : BaseWindow({BaseWindow::Flags::DisableCustomScaling,
+                  BaseWindow::Flags::Dialog, BaseWindow::DisableLayoutSave},
+                 parent)
 {
+    this->setObjectName("SettingsDialog");
     this->setWindowTitle("Chatterino Settings");
+    // Disable the ? button in the titlebar until we decide to use it
+    this->setWindowFlags(this->windowFlags() &
+                         ~Qt::WindowContextHelpButtonHint);
+
     this->resize(915, 600);
     this->themeChangedEvent();
     this->scaleChangedEvent(this->scale());
@@ -39,14 +47,46 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     this->overrideBackgroundColor_ = QColor("#111111");
     this->scaleChangedEvent(this->scale());  // execute twice to width of item
 
-    createWindowShortcut(this, "CTRL+F", [this] {
-        this->ui_.search->setFocus();
-        this->ui_.search->selectAll();
-    });
+    this->addShortcuts();
+    this->signalHolder_.managedConnect(getApp()->hotkeys->onItemsUpdated,
+                                       [this]() {
+                                           this->clearShortcuts();
+                                           this->addShortcuts();
+                                       });
+}
 
-    // Disable the ? button in the titlebar until we decide to use it
-    this->setWindowFlags(this->windowFlags() &
-                         ~Qt::WindowContextHelpButtonHint);
+void SettingsDialog::addShortcuts()
+{
+    this->setSearchPlaceholderText();
+    HotkeyController::HotkeyMap actions{
+        {"search",
+         [this](std::vector<QString>) -> QString {
+             this->ui_.search->setFocus();
+             this->ui_.search->selectAll();
+             return "";
+         }},
+        {"delete", nullptr},
+        {"accept", nullptr},
+        {"reject", nullptr},
+        {"scrollPage", nullptr},
+        {"openTab", nullptr},
+    };
+
+    this->shortcuts_ = getApp()->hotkeys->shortcutsForCategory(
+        HotkeyCategory::PopupWindow, actions, this);
+}
+void SettingsDialog::setSearchPlaceholderText()
+{
+    QString searchHotkey;
+    auto searchSeq = getApp()->hotkeys->getDisplaySequence(
+        HotkeyCategory::PopupWindow, "search");
+    if (!searchSeq.isEmpty())
+    {
+        searchHotkey =
+            "(" + searchSeq.toString(QKeySequence::SequenceFormat::NativeText) +
+            ")";
+    }
+    this->ui_.search->setPlaceholderText("Find in settings... " + searchHotkey);
 }
 
 void SettingsDialog::initUi()
@@ -62,7 +102,10 @@ void SettingsDialog::initUi()
                     .withoutMargin()
                     .emplace<QLineEdit>()
                     .assign(&this->ui_.search);
-    edit->setPlaceholderText("Find in settings... (Ctrl+F)");
+    this->setSearchPlaceholderText();
+    edit->setClearButtonEnabled(true);
+    edit->findChild<QAbstractButton *>()->setIcon(
+        QPixmap(":/buttons/clearSearch.png"));
 
     QObject::connect(edit.getElement(), &QLineEdit::textChanged, this,
                      &SettingsDialog::filterElements);
@@ -83,7 +126,7 @@ void SettingsDialog::initUi()
         .assign(&this->ui_.pageStack)
         .withoutMargin();
 
-    this->ui_.pageStack->setMargin(0);
+    this->ui_.pageStack->setContentsMargins(0, 0, 0, 0);
 
     outerBox->addSpacing(12);
 
@@ -153,9 +196,7 @@ void SettingsDialog::filterElements(const QString &text)
 
 void SettingsDialog::addTabs()
 {
-    this->ui_.tabContainer->setMargin(0);
     this->ui_.tabContainer->setSpacing(0);
-
     this->ui_.tabContainer->setContentsMargins(0, 20, 0, 20);
 
     // Constructors are wrapped in std::function to remove some strain from first time loading.
@@ -164,13 +205,14 @@ void SettingsDialog::addTabs()
     this->addTab([]{return new GeneralPage;},          "General",        ":/settings/about.svg");
     this->ui_.tabContainer->addSpacing(16);
     this->addTab([]{return new AccountsPage;},         "Accounts",       ":/settings/accounts.svg", SettingsTabId::Accounts);
+    this->addTab([]{return new NicknamesPage;},        "Nicknames",      ":/settings/accounts.svg");
     this->ui_.tabContainer->addSpacing(16);
     this->addTab([]{return new CommandPage;},          "Commands",       ":/settings/commands.svg");
     this->addTab([]{return new HighlightingPage;},     "Highlights",     ":/settings/notifications.svg");
     this->addTab([]{return new IgnoresPage;},          "Ignores",        ":/settings/ignore.svg");
     this->addTab([]{return new FiltersPage;},          "Filters",        ":/settings/filters.svg");
     this->ui_.tabContainer->addSpacing(16);
-    this->addTab([]{return new KeyboardSettingsPage;}, "Keybindings",    ":/settings/keybinds.svg");
+    this->addTab([]{return new KeyboardSettingsPage;}, "Hotkeys",        ":/settings/keybinds.svg");
     this->addTab([]{return new ModerationPage;},       "Moderation",     ":/settings/moderation.svg", SettingsTabId::Moderation);
     this->addTab([]{return new NotificationPage;},     "Live Notifications",  ":/settings/notification2.svg");
     this->addTab([]{return new ExternalToolsPage;},    "External tools", ":/settings/externaltools.svg");

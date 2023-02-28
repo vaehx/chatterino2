@@ -2,10 +2,7 @@
 
 #include "widgets/settingspages/SettingsPage.hpp"
 
-class QPushButton;
-class QListWidget;
-
-class QVBoxLayout;
+class QComboBox;
 
 namespace chatterino {
 
@@ -15,8 +12,7 @@ public:
     NotificationPage();
 
 private:
-    QComboBox *createToastReactionComboBox(
-        std::vector<pajlada::Signals::ScopedConnection> managedConnections);
+    QComboBox *createToastReactionComboBox();
 };
 
 }  // namespace chatterino

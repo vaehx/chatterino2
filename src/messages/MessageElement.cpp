@@ -1,24 +1,19 @@
 #include "messages/MessageElement.hpp"
 
 #include "Application.hpp"
-#include "common/IrcColors.hpp"
+#include "controllers/moderationactions/ModerationAction.hpp"
 #include "debug/Benchmark.hpp"
 #include "messages/Emote.hpp"
+#include "messages/Image.hpp"
 #include "messages/layouts/MessageLayoutContainer.hpp"
 #include "messages/layouts/MessageLayoutElement.hpp"
+#include "providers/emoji/Emojis.hpp"
+#include "singletons/Emotes.hpp"
 #include "singletons/Settings.hpp"
 #include "singletons/Theme.hpp"
 #include "util/DebugCount.hpp"
 
 namespace chatterino {
-
-namespace {
-
-    QRegularExpression IRC_COLOR_PARSE_REGEX(
-        "(\u0003(\\d{1,2})?(,(\\d{1,2}))?|\u000f)",
-        QRegularExpression::UseUnicodePropertiesOption);
-
-}  // namespace
 
 MessageElement::MessageElement(MessageElementFlags flags)
     : flags_(flags)
@@ -141,13 +136,39 @@ void ImageElement::addToContainer(MessageLayoutContainer &container,
     }
 }
 
+CircularImageElement::CircularImageElement(ImagePtr image, int padding,
+                                           QColor background,
+                                           MessageElementFlags flags)
+    : MessageElement(flags)
+    , image_(image)
+    , padding_(padding)
+    , background_(background)
+{
+}
+
+void CircularImageElement::addToContainer(MessageLayoutContainer &container,
+                                          MessageElementFlags flags)
+{
+    if (flags.hasAny(this->getFlags()))
+    {
+        auto imgSize = QSize(this->image_->width(), this->image_->height()) *
+                       container.getScale();
+
+        container.addElement((new ImageWithCircleBackgroundLayoutElement(
+                                  *this, this->image_, imgSize,
+                                  this->background_, this->padding_))
+                                 ->setLink(this->getLink()));
+    }
+}
+
 // EMOTE
-EmoteElement::EmoteElement(const EmotePtr &emote, MessageElementFlags flags)
+EmoteElement::EmoteElement(const EmotePtr &emote, MessageElementFlags flags,
+                           const MessageColor &textElementColor)
     : MessageElement(flags)
     , emote_(emote)
 {
-    this->textElement_.reset(
-        new TextElement(emote->getCopyString(), MessageElementFlag::Misc));
+    this->textElement_.reset(new TextElement(
+        emote->getCopyString(), MessageElementFlag::Misc, textElementColor));
 
     this->setTooltip(emote->tooltip.string);
 }
@@ -271,10 +292,10 @@ MessageLayoutElement *VipBadgeElement::makeImageLayoutElement(
 
 // FFZ Badge
 FfzBadgeElement::FfzBadgeElement(const EmotePtr &data,
-                                 MessageElementFlags flags_, QColor &color)
+                                 MessageElementFlags flags_, QColor color_)
     : BadgeElement(data, flags_)
+    , color(std::move(color_))
 {
-    this->color = color;
 }
 
 MessageLayoutElement *FfzBadgeElement::makeImageLayoutElement(
@@ -403,6 +424,154 @@ void TextElement::addToContainer(MessageLayoutContainer &container,
     }
 }
 
+SingleLineTextElement::SingleLineTextElement(const QString &text,
+                                             MessageElementFlags flags,
+                                             const MessageColor &color,
+                                             FontStyle style)
+    : MessageElement(flags)
+    , color_(color)
+    , style_(style)
+{
+    for (const auto &word : text.split(' '))
+    {
+        this->words_.push_back({word, -1});
+    }
+}
+
+void SingleLineTextElement::addToContainer(MessageLayoutContainer &container,
+                                           MessageElementFlags flags)
+{
+    auto app = getApp();
+
+    if (flags.hasAny(this->getFlags()))
+    {
+        QFontMetrics metrics =
+            app->fonts->getFontMetrics(this->style_, container.getScale());
+
+        auto getTextLayoutElement = [&](QString text, int width,
+                                        bool hasTrailingSpace) {
+            auto color = this->color_.getColor(*app->themes);
+            app->themes->normalizeColor(color);
+
+            auto e = (new TextLayoutElement(
+                          *this, text, QSize(width, metrics.height()), color,
+                          this->style_, container.getScale()))
+                         ->setLink(this->getLink());
+            e->setTrailingSpace(hasTrailingSpace);
+            e->setText(text);
+
+            // If URL link was changed,
+            // Should update it in MessageLayoutElement too!
+            if (this->getLink().type == Link::Url)
+            {
+                static_cast<TextLayoutElement *>(e)->listenToLinkChanges();
+            }
+            return e;
+        };
+
+        static const auto ellipsis = QStringLiteral("...");
+
+        // String to continuously append words onto until we place it in the container
+        // once we encounter an emote or reach the end of the message text. */
+        QString currentText;
+
+        container.first = FirstWord::Neutral;
+        for (Word &word : this->words_)
+        {
+            auto parsedWords = app->emotes->emojis.parse(word.text);
+            if (parsedWords.size() == 0)
+            {
+                continue;  // sanity check
+            }
+
+            auto &parsedWord = parsedWords[0];
+            if (parsedWord.type() == typeid(QString))
+            {
+                int nextWidth =
+                    metrics.horizontalAdvance(currentText + word.text);
+
+                // see if the text fits in the current line
+                if (container.fitsInLine(nextWidth))
+                {
+                    currentText += (word.text + " ");
+                }
+                else
+                {
+                    // word overflows, try minimum truncation
+                    bool cutSuccess = false;
+                    for (size_t cut = 1; cut < word.text.length(); ++cut)
+                    {
+                        // Cut off n characters and append the ellipsis.
+                        // Try removing characters one by one until the word fits.
+                        QString truncatedWord =
+                            word.text.chopped(cut) + ellipsis;
+                        int newSize = metrics.horizontalAdvance(currentText +
+                                                                truncatedWord);
+                        if (container.fitsInLine(newSize))
+                        {
+                            currentText += (truncatedWord);
+
+                            cutSuccess = true;
+                            break;
+                        }
+                    }
+
+                    if (!cutSuccess)
+                    {
+                        // We weren't able to show any part of the current word, so
+                        // just append the ellipsis.
+                        currentText += ellipsis;
+                    }
+
+                    break;
+                }
+            }
+            else if (parsedWord.type() == typeid(EmotePtr))
+            {
+                auto emote = boost::get<EmotePtr>(parsedWord);
+                auto image =
+                    emote->images.getImageOrLoaded(container.getScale());
+                if (!image->isEmpty())
+                {
+                    auto emoteScale = getSettings()->emoteScale.getValue();
+
+                    int currentWidth = metrics.horizontalAdvance(currentText);
+                    auto emoteSize = QSize(image->width(), image->height()) *
+                                     (emoteScale * container.getScale());
+
+                    if (!container.fitsInLine(currentWidth + emoteSize.width()))
+                    {
+                        currentText += ellipsis;
+                        break;
+                    }
+
+                    // Add currently pending text to container, then add the emote after.
+                    container.addElementNoLineBreak(
+                        getTextLayoutElement(currentText, currentWidth, false));
+                    currentText.clear();
+
+                    container.addElementNoLineBreak(
+                        (new ImageLayoutElement(*this, image, emoteSize))
+                            ->setLink(this->getLink()));
+                }
+            }
+        }
+
+        // Add the last of the pending message text to the container.
+        if (!currentText.isEmpty())
+        {
+            // Remove trailing space.
+            currentText = currentText.trimmed();
+
+            int width = metrics.horizontalAdvance(currentText);
+            container.addElementNoLineBreak(
+                getTextLayoutElement(currentText, width, false));
+        }
+
+        container.breakLine();
+    }
+}
+
 // TIMESTAMP
 TimestampElement::TimestampElement(QTime time)
     : MessageElement(MessageElementFlag::Timestamp)
@@ -471,252 +640,6 @@ void TwitchModerationElement::addToContainer(MessageLayoutContainer &container,
     }
 }
 
-// TEXT
-// IrcTextElement gets its color from the color code in the message, and can change from character to character.
-// This differs from the TextElement
-IrcTextElement::IrcTextElement(const QString &fullText,
-                               MessageElementFlags flags, FontStyle style)
-    : MessageElement(flags)
-    , style_(style)
-{
-    assert(IRC_COLOR_PARSE_REGEX.isValid());
-
-    // Default pen colors. -1 = default theme colors
-    int fg = -1, bg = -1;
-
-    // Split up the message in words (space separated)
-    // Each word contains one or more colored segments.
-    // The color of that segment is "global", as in it can be decided by the word before it.
-    for (const auto &text : fullText.split(' '))
-    {
-        std::vector<Segment> segments;
-
-        int pos = 0;
-        int lastPos = 0;
-
-        auto i = IRC_COLOR_PARSE_REGEX.globalMatch(text);
-
-        while (i.hasNext())
-        {
-            auto match = i.next();
-
-            if (lastPos != match.capturedStart() && match.capturedStart() != 0)
-            {
-                auto seg = Segment{};
-                seg.text = text.mid(lastPos, match.capturedStart() - lastPos);
-                seg.fg = fg;
-                seg.bg = bg;
-                segments.emplace_back(seg);
-                lastPos = match.capturedStart() + match.capturedLength();
-            }
-            if (!match.captured(1).isEmpty())
-            {
-                fg = -1;
-                bg = -1;
-            }
-
-            if (!match.captured(2).isEmpty())
-            {
-                fg = match.captured(2).toInt(nullptr);
-            }
-            else
-            {
-                fg = -1;
-            }
-            if (!match.captured(4).isEmpty())
-            {
-                bg = match.captured(4).toInt(nullptr);
-            }
-            else if (fg == -1)
-            {
-                bg = -1;
-            }
-
-            lastPos = match.capturedStart() + match.capturedLength();
-        }
-
-        auto seg = Segment{};
-        seg.text = text.mid(lastPos);
-        seg.fg = fg;
-        seg.bg = bg;
-        segments.emplace_back(seg);
-
-        QString n(text);
-
-        n.replace(IRC_COLOR_PARSE_REGEX, "");
-
-        Word w{
-            n,
-            -1,
-            segments,
-        };
-        this->words_.emplace_back(w);
-    }
-}
-
-void IrcTextElement::addToContainer(MessageLayoutContainer &container,
-                                    MessageElementFlags flags)
-{
-    auto app = getApp();
-
-    MessageColor defaultColorType = MessageColor::Text;
-    auto defaultColor = defaultColorType.getColor(*app->themes);
-    if (flags.hasAny(this->getFlags()))
-    {
-        QFontMetrics metrics =
-            app->fonts->getFontMetrics(this->style_, container.getScale());
-
-        for (auto &word : this->words_)
-        {
-            auto getTextLayoutElement = [&](QString text,
-                                            std::vector<Segment> segments,
-                                            int width, bool hasTrailingSpace) {
-                std::vector<PajSegment> xd{};
-
-                for (const auto &segment : segments)
-                {
-                    QColor color = defaultColor;
-                    if (segment.fg >= 0 && segment.fg <= 98)
-                    {
-                        color = IRC_COLORS[segment.fg];
-                    }
-                    app->themes->normalizeColor(color);
-                    xd.emplace_back(PajSegment{segment.text, color});
-                }
-
-                auto e = (new MultiColorTextLayoutElement(
-                              *this, text, QSize(width, metrics.height()), xd,
-                              this->style_, container.getScale()))
-                             ->setLink(this->getLink());
-                e->setTrailingSpace(true);
-                e->setText(text);
-
-                // If URL link was changed,
-                // Should update it in MessageLayoutElement too!
-                if (this->getLink().type == Link::Url)
-                {
-                    static_cast<TextLayoutElement *>(e)->listenToLinkChanges();
-                }
-                return e;
-            };
-
-            // fourtf: add again
-            //            if (word.width == -1) {
-            word.width = metrics.horizontalAdvance(word.text);
-            //            }
-
-            // see if the text fits in the current line
-            if (container.fitsInLine(word.width))
-            {
-                container.addElementNoLineBreak(
-                    getTextLayoutElement(word.text, word.segments, word.width,
-                                         this->hasTrailingSpace()));
-                continue;
-            }
-
-            // see if the text fits in the next line
-            if (!container.atStartOfLine())
-            {
-                container.breakLine();
-
-                if (container.fitsInLine(word.width))
-                {
-                    container.addElementNoLineBreak(getTextLayoutElement(
-                        word.text, word.segments, word.width,
-                        this->hasTrailingSpace()));
-                    continue;
-                }
-            }
-
-            // The word does not fit on a new line, we need to wrap it
-            QString text = word.text;
-            std::vector<Segment> segments = word.segments;
-            int textLength = text.length();
-            int wordStart = 0;
-            int width = 0;
-
-            // QChar::isHighSurrogate(text[0].unicode()) ? 2 : 1
-
-            // XXX(pajlada): NOT TESTED
-            for (int i = 0; i < textLength; i++)
-            {
-                if (!container.canAddElements())
-                {
-                    // The container does not allow any more elements to be added, stop here
-                    break;
-                }
-
-                auto isSurrogate = text.size() > i + 1 &&
-                                   QChar::isHighSurrogate(text[i].unicode());
-
-                auto charWidth = isSurrogate
-                                     ? metrics.horizontalAdvance(text.mid(i, 2))
-                                     : metrics.horizontalAdvance(text[i]);
-
-                if (!container.fitsInLine(width + charWidth))
-                {
-                    std::vector<Segment> pieceSegments;
-                    int charactersLeft = i - wordStart;
-
-                    for (auto segmentIt = segments.begin();
-                         segmentIt != segments.end();)
-                    {
-                        auto &segment = *segmentIt;
-                        if (charactersLeft >= segment.text.length())
-                        {
-                            // Entire segment fits in this piece
-                            pieceSegments.push_back(segment);
-                            charactersLeft -= segment.text.length();
-                            segmentIt = segments.erase(segmentIt);
-
-                            assert(charactersLeft >= 0);
-
-                            if (charactersLeft == 0)
-                            {
-                                break;
-                            }
-                        }
-                        else
-                        {
-                            // Only part of the segment fits in this piece
-                            // We create a new segment with the characters that fit, and modify the segment we checked to only contain the characters we didn't consume
-                            Segment segmentThatFitsInPiece{
-                                segment.text.left(charactersLeft), segment.fg,
-                                segment.bg};
-                            pieceSegments.emplace_back(segmentThatFitsInPiece);
-                            segment.text = segment.text.mid(charactersLeft);
-
-                            break;
-                        }
-                    }
-
-                    container.addElementNoLineBreak(
-                        getTextLayoutElement(text.mid(wordStart, i - wordStart),
-                                             pieceSegments, width, false));
-                    container.breakLine();
-
-                    wordStart = i;
-                    width = charWidth;
-
-                    if (isSurrogate)
-                        i++;
-                    continue;
-                }
-
-                width += charWidth;
-
-                if (isSurrogate)
-                    i++;
-            }
-
-            // Add last remaining text & segments
-            container.addElementNoLineBreak(
-                getTextLayoutElement(text.mid(wordStart), segments, width,
-                                     this->hasTrailingSpace()));
-        }
-    }
-}
-
 LinebreakElement::LinebreakElement(MessageElementFlags flags)
     : MessageElement(flags)
 {
@@ -753,6 +676,28 @@ void ScalingImageElement::addToContainer(MessageLayoutContainer &container,
 
         container.addElement((new ImageLayoutElement(*this, image, size))
                                  ->setLink(this->getLink()));
+    }
+}
+
+ReplyCurveElement::ReplyCurveElement()
+    : MessageElement(MessageElementFlag::RepliedMessage)
+{
+}
+
+void ReplyCurveElement::addToContainer(MessageLayoutContainer &container,
+                                       MessageElementFlags flags)
+{
+    static const int width = 18;         // Overall width
+    static const float thickness = 1.5;  // Pen width
+    static const int radius = 6;         // Radius of the top left corner
+    static const int margin = 2;         // Top/Left/Bottom margin
+
+    if (flags.hasAny(this->getFlags()))
+    {
+        float scale = container.getScale();
+        container.addElement(
+            new ReplyCurveLayoutElement(*this, width * scale, thickness * scale,
+                                        radius * scale, margin * scale));
     }
 }
 

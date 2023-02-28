@@ -1,19 +1,23 @@
 #pragma once
 
-#include "common/Channel.hpp"
-#include "widgets/helper/NotebookTab.hpp"
+#include <QList>
+#include <QUuid>
 
 #include <deque>
 #include <mutex>
 #include <utility>
+#include <vector>
 
 namespace chatterino {
+
+class NotebookTab;
 
 class ClosedSplits
 {
 public:
     struct SplitInfo {
         QString channelName;
+        QList<QUuid> filters;
         NotebookTab *tab;  // non owning ptr
     };
 

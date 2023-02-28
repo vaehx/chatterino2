@@ -1,15 +1,18 @@
 #include "FilterParser.hpp"
 
 #include "Application.hpp"
+#include "common/Channel.hpp"
 #include "controllers/filters/parser/Types.hpp"
+#include "messages/Message.hpp"
+#include "providers/twitch/TwitchBadge.hpp"
+#include "providers/twitch/TwitchChannel.hpp"
 #include "providers/twitch/TwitchIrcServer.hpp"
 
 namespace filterparser {
 
-ContextMap buildContextMap(const MessagePtr &m)
+ContextMap buildContextMap(const MessagePtr &m, chatterino::Channel *channel)
 {
-    auto watchingChannel =
-        chatterino::getApp()->twitch.server->watchingChannel.get();
+    auto watchingChannel = chatterino::getApp()->twitch->watchingChannel.get();
 
     /* Known Identifiers
      *
@@ -27,7 +30,13 @@ ContextMap buildContextMap(const MessagePtr &m)
      * flags.points_redeemed
      * flags.sub_message
      * flags.system_message
+     * flags.reward_message
+     * flags.first_message
+     * flags.elevated_message
+     * flags.cheer_message
      * flags.whisper
+     * flags.reply
+     * flags.automod
      *
      * message.content
      * message.length
@@ -47,12 +56,21 @@ ContextMap buildContextMap(const MessagePtr &m)
                     watchingChannel->getName().compare(
                         m->channelName, Qt::CaseInsensitive) == 0;
 
-    bool subscribed = badges.contains("subscriber");
-    int subLength = (subscribed && m->badgeInfos.count("subscriber") != 0)
-                        ? m->badgeInfos.at("subscriber").toInt()
-                        : 0;
-
-    return {
+    bool subscribed = false;
+    int subLength = 0;
+    for (const auto &subBadge : {"subscriber", "founder"})
+    {
+        if (!badges.contains(subBadge))
+        {
+            continue;
+        }
+        subscribed = true;
+        if (m->badgeInfos.find(subBadge) != m->badgeInfos.end())
+        {
+            subLength = m->badgeInfos.at(subBadge).toInt();
+        }
+    }
+    ContextMap vars = {
         {"author.badges", std::move(badges)},
         {"author.color", m->usernameColor},
         {"author.name", m->displayName},
@@ -67,11 +85,31 @@ ContextMap buildContextMap(const MessagePtr &m)
         {"flags.points_redeemed", m->flags.has(MessageFlag::RedeemedHighlight)},
         {"flags.sub_message", m->flags.has(MessageFlag::Subscription)},
         {"flags.system_message", m->flags.has(MessageFlag::System)},
+        {"flags.reward_message",
+         m->flags.has(MessageFlag::RedeemedChannelPointReward)},
+        {"flags.first_message", m->flags.has(MessageFlag::FirstMessage)},
+        {"flags.elevated_message", m->flags.has(MessageFlag::ElevatedMessage)},
+        {"flags.cheer_message", m->flags.has(MessageFlag::CheerMessage)},
         {"flags.whisper", m->flags.has(MessageFlag::Whisper)},
+        {"flags.reply", m->flags.has(MessageFlag::ReplyMessage)},
+        {"flags.automod", m->flags.has(MessageFlag::AutoMod)},
 
         {"message.content", m->messageText},
         {"message.length", m->messageText.length()},
     };
+    {
+        using namespace chatterino;
+        auto *tc = dynamic_cast<TwitchChannel *>(channel);
+        if (channel && !channel->isEmpty() && tc)
+        {
+            vars["channel.live"] = tc->isLive();
+        }
+        else
+        {
+            vars["channel.live"] = false;
+        }
+    }
+    return vars;
 }
 
 FilterParser::FilterParser(const QString &text)
@@ -79,12 +117,6 @@ FilterParser::FilterParser(const QString &text)
     , tokenizer_(Tokenizer(text))
     , builtExpression_(this->parseExpression(true))
 {
-}
-
-bool FilterParser::execute(const MessagePtr &message) const
-{
-    auto context = buildContextMap(message);
-    return this->execute(context);
 }
 
 bool FilterParser::execute(const ContextMap &context) const

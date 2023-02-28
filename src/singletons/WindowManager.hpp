@@ -1,19 +1,29 @@
 #pragma once
 
-#include <memory>
-#include "common/Channel.hpp"
 #include "common/FlagsEnum.hpp"
 #include "common/Singleton.hpp"
-#include "common/WindowDescriptors.hpp"
-#include "pajlada/settings/settinglistener.hpp"
 #include "widgets/splits/SplitContainer.hpp"
+
+#include <pajlada/settings/settinglistener.hpp>
+#include <QPoint>
+#include <QTimer>
+
+#include <memory>
 
 namespace chatterino {
 
 class Settings;
 class Paths;
 class Window;
-class SplitContainer;
+class ChannelView;
+class IndirectChannel;
+class Split;
+struct SplitDescriptor;
+class Channel;
+using ChannelPtr = std::shared_ptr<Channel>;
+struct Message;
+using MessagePtr = std::shared_ptr<const Message>;
+class WindowLayout;
 
 enum class MessageElementFlag : int64_t;
 using MessageElementFlags = FlagsEnum<MessageElementFlag>;
@@ -30,6 +40,8 @@ public:
     WindowManager();
     ~WindowManager() override;
 
+    static void encodeTab(SplitContainer *tab, bool isSelected,
+                          QJsonObject &obj);
     static void encodeChannel(IndirectChannel channel, QJsonObject &obj);
     static void encodeFilters(Split *split, QJsonArray &arr);
     static IndirectChannel decodeChannel(const SplitDescriptor &descriptor);
@@ -54,10 +66,22 @@ public:
 
     Window &getMainWindow();
     Window &getSelectedWindow();
-    Window &createWindow(WindowType type, bool show = true);
+    Window &createWindow(WindowType type, bool show = true,
+                         QWidget *parent = nullptr);
+
+    // Use this method if you want to open a "new" channel in a popup. If you want to popup an
+    // existing Split or SplitContainer, consider using Split::popup() or SplitContainer::popup().
+    Window &openInPopup(ChannelPtr channel);
 
     void select(Split *split);
     void select(SplitContainer *container);
+    /**
+     * Scrolls to the message in a split that's not
+     * a mentions view and focuses the split.
+     *
+     * @param message Message to scroll to.
+     */
+    void scrollToMessage(const MessagePtr &message);
 
     QPoint emotePopupPos();
     void setEmotePopupPos(QPoint pos);
@@ -97,9 +121,11 @@ public:
 
     pajlada::Signals::Signal<Split *> selectSplit;
     pajlada::Signals::Signal<SplitContainer *> selectSplitContainer;
+    pajlada::Signals::Signal<const MessagePtr &> scrollToMessageSignal;
 
 private:
-    void encodeNodeRecursively(SplitContainer::Node *node, QJsonObject &obj);
+    static void encodeNodeRecursively(SplitContainer::Node *node,
+                                      QJsonObject &obj);
 
     // Load window layout from the window-layout.json file
     WindowLayout loadWindowLayoutFromFile() const;

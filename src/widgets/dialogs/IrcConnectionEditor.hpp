@@ -1,9 +1,10 @@
 #pragma once
 
-#include <boost/optional.hpp>
-
 #include "providers/irc/Irc2.hpp"
 #include "widgets/BaseWindow.hpp"
+
+#include <boost/optional.hpp>
+#include <QDialog>
 
 namespace Ui {
 class IrcConnectionEditor;

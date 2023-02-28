@@ -1,12 +1,13 @@
 #pragma once
 
-#include "pajlada/signals/signal.hpp"
 #include "widgets/BaseWidget.hpp"
 
+#include <pajlada/signals/signal.hpp>
+#include <pajlada/signals/signalholder.hpp>
 #include <QList>
+#include <QMenu>
 #include <QMessageBox>
 #include <QWidget>
-#include <pajlada/signals/signalholder.hpp>
 
 namespace chatterino {
 
@@ -16,7 +17,7 @@ class NotebookButton;
 class NotebookTab;
 class SplitContainer;
 
-enum NotebookTabDirection { Horizontal = 0, Vertical = 1 };
+enum NotebookTabLocation { Top = 0, Left = 1, Right = 2, Bottom = 3 };
 
 class Notebook : public BaseWidget
 {
@@ -32,11 +33,11 @@ public:
     void removeCurrentPage();
 
     int indexOf(QWidget *page) const;
-    virtual void select(QWidget *page);
-    void selectIndex(int index);
-    void selectNextTab();
-    void selectPreviousTab();
-    void selectLastTab();
+    virtual void select(QWidget *page, bool focusPage = true);
+    void selectIndex(int index, bool focusPage = true);
+    void selectNextTab(bool focusPage = true);
+    void selectPreviousTab(bool focusPage = true);
+    void selectLastTab(bool focusPage = true);
 
     int getPageCount() const;
     QWidget *getPageAt(int index) const;
@@ -49,16 +50,25 @@ public:
     bool getAllowUserTabManagement() const;
     void setAllowUserTabManagement(bool value);
 
+    bool getShowTabs() const;
+    void setShowTabs(bool value);
+
     bool getShowAddButton() const;
     void setShowAddButton(bool value);
 
     void performLayout(bool animate = false);
 
-    void setTabDirection(NotebookTabDirection direction);
+    void setTabLocation(NotebookTabLocation location);
+
+    bool isNotebookLayoutLocked() const;
+    void setLockNotebookLayout(bool value);
+
+    void addNotebookActionsToMenu(QMenu *menu);
 
 protected:
     virtual void scaleChangedEvent(float scale_) override;
     virtual void resizeEvent(QResizeEvent *) override;
+    virtual void mousePressEvent(QMouseEvent *event) override;
     virtual void paintEvent(QPaintEvent *) override;
 
     NotebookButton *getAddButton();
@@ -76,32 +86,43 @@ protected:
     }
 
 private:
+    void updateTabVisibilityMenuAction();
+    void resizeAddButton();
+
     bool containsPage(QWidget *page);
-    Item &findItem(QWidget *page);
+    Item *findItem(QWidget *page);
 
     static bool containsChild(const QObject *obj, const QObject *child);
     NotebookTab *getTabFromPage(QWidget *page);
 
+    // Returns the number of buttons in `customButtons_` that are visible
+    size_t visibleButtonCount() const;
+
     QList<Item> items_;
+    QMenu menu_;
     QWidget *selectedPage_ = nullptr;
 
     NotebookButton *addButton_;
     std::vector<NotebookButton *> customButtons_;
 
     bool allowUserTabManagement_ = false;
+    bool showTabs_ = true;
     bool showAddButton_ = false;
     int lineOffset_ = 20;
-    NotebookTabDirection tabDirection_ = NotebookTabDirection::Horizontal;
+    bool lockNotebookLayout_ = false;
+    NotebookTabLocation tabLocation_ = NotebookTabLocation::Top;
+    QAction *lockNotebookLayoutAction_;
+    QAction *showTabsAction_;
 };
 
-class SplitNotebook : public Notebook, pajlada::Signals::SignalHolder
+class SplitNotebook : public Notebook
 {
 public:
     SplitNotebook(Window *parent);
 
     SplitContainer *addPage(bool select = false);
     SplitContainer *getOrAddSelectedPage();
-    void select(QWidget *page) override;
+    void select(QWidget *page, bool focusPage = true) override;
 
 protected:
     void showEvent(QShowEvent *event) override;
@@ -110,8 +131,6 @@ private:
     void addCustomButtons();
 
     pajlada::Signals::SignalHolder signalHolder_;
-
-    std::vector<pajlada::Signals::ScopedConnection> connections_;
 };
 
 }  // namespace chatterino

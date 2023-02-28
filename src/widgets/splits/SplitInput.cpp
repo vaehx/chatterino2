@@ -1,53 +1,76 @@
 #include "widgets/splits/SplitInput.hpp"
 
 #include "Application.hpp"
+#include "common/QLogging.hpp"
 #include "controllers/commands/CommandController.hpp"
+#include "controllers/hotkeys/HotkeyController.hpp"
 #include "messages/Link.hpp"
+#include "messages/Message.hpp"
+#include "messages/MessageThread.hpp"
 #include "providers/twitch/TwitchChannel.hpp"
+#include "providers/twitch/TwitchCommon.hpp"
 #include "providers/twitch/TwitchIrcServer.hpp"
 #include "singletons/Settings.hpp"
 #include "singletons/Theme.hpp"
 #include "util/Clamp.hpp"
+#include "util/Helpers.hpp"
 #include "util/LayoutCreator.hpp"
-#include "widgets/Notebook.hpp"
-#include "widgets/Scrollbar.hpp"
 #include "widgets/dialogs/EmotePopup.hpp"
 #include "widgets/helper/ChannelView.hpp"
 #include "widgets/helper/EffectLabel.hpp"
 #include "widgets/helper/ResizingTextEdit.hpp"
-#include "widgets/splits/EmoteInputPopup.hpp"
+#include "widgets/Notebook.hpp"
+#include "widgets/Scrollbar.hpp"
+#include "widgets/splits/InputCompletionPopup.hpp"
 #include "widgets/splits/Split.hpp"
 #include "widgets/splits/SplitContainer.hpp"
-#include "widgets/splits/SplitInput.hpp"
 
 #include <QCompleter>
 #include <QPainter>
+#include <QSignalBlocker>
+
+#include <functional>
 
 namespace chatterino {
-const int TWITCH_MESSAGE_LIMIT = 500;
 
-SplitInput::SplitInput(Split *_chatWidget)
-    : BaseWidget(_chatWidget)
-    , split_(_chatWidget)
+SplitInput::SplitInput(Split *_chatWidget, bool enableInlineReplying)
+    : SplitInput(_chatWidget, _chatWidget, _chatWidget->view_,
+                 enableInlineReplying)
 {
+}
+
+SplitInput::SplitInput(QWidget *parent, Split *_chatWidget,
+                       ChannelView *_channelView, bool enableInlineReplying)
+    : BaseWidget(parent)
+    , split_(_chatWidget)
+    , channelView_(_channelView)
+    , enableInlineReplying_(enableInlineReplying)
+{
+    this->installEventFilter(this);
     this->initLayout();
 
     auto completer =
         new QCompleter(&this->split_->getChannel().get()->completionModel);
     this->ui_.textEdit->setCompleter(completer);
 
-    this->split_->channelChanged.connect([this] {
-        auto completer =
-            new QCompleter(&this->split_->getChannel()->completionModel);
+    this->signalHolder_.managedConnect(this->split_->channelChanged, [this] {
+        auto channel = this->split_->getChannel();
+        auto completer = new QCompleter(&channel->completionModel);
         this->ui_.textEdit->setCompleter(completer);
     });
 
     // misc
     this->installKeyPressedEvent();
+    this->addShortcuts();
     this->ui_.textEdit->focusLost.connect([this] {
-        this->hideColonMenu();
+        this->hideCompletionPopup();
     });
     this->scaleChangedEvent(this->scale());
+    this->signalHolder_.managedConnect(getApp()->hotkeys->onItemsUpdated,
+                                       [this]() {
+                                           this->clearShortcuts();
+                                           this->addShortcuts();
+                                       });
 }
 
 void SplitInput::initLayout()
@@ -56,17 +79,43 @@ void SplitInput::initLayout()
     LayoutCreator<SplitInput> layoutCreator(this);
 
     auto layout =
-        layoutCreator.setLayoutType<QHBoxLayout>().withoutMargin().assign(
-            &this->ui_.hbox);
+        layoutCreator.setLayoutType<QVBoxLayout>().withoutMargin().assign(
+            &this->ui_.vbox);
+
+    // reply label stuff
+    auto replyWrapper =
+        layout.emplace<QWidget>().assign(&this->ui_.replyWrapper);
+    this->ui_.replyWrapper->setContentsMargins(0, 0, 0, 0);
+
+    auto replyHbox = replyWrapper.emplace<QHBoxLayout>().withoutMargin().assign(
+        &this->ui_.replyHbox);
+
+    auto replyLabel = replyHbox.emplace<QLabel>().assign(&this->ui_.replyLabel);
+    replyLabel->setAlignment(Qt::AlignLeft);
+    replyLabel->setFont(
+        app->fonts->getFont(FontStyle::ChatMedium, this->scale()));
+
+    replyHbox->addStretch(1);
+
+    auto replyCancelButton = replyHbox.emplace<EffectLabel>(nullptr, 4)
+                                 .assign(&this->ui_.cancelReplyButton);
+    replyCancelButton->getLabel().setTextFormat(Qt::RichText);
+
+    replyCancelButton->hide();
+    replyLabel->hide();
+
+    // hbox for input, right box
+    auto hboxLayout =
+        layout.emplace<QHBoxLayout>().withoutMargin().assign(&this->ui_.hbox);
 
     // input
     auto textEdit =
-        layout.emplace<ResizingTextEdit>().assign(&this->ui_.textEdit);
+        hboxLayout.emplace<ResizingTextEdit>().assign(&this->ui_.textEdit);
     connect(textEdit.getElement(), &ResizingTextEdit::textChanged, this,
             &SplitInput::editTextChanged);
 
     // right box
-    auto box = layout.emplace<QVBoxLayout>().withoutMargin();
+    auto box = hboxLayout.emplace<QVBoxLayout>().withoutMargin();
     box->setSpacing(0);
     {
         auto textEditLength =
@@ -86,23 +135,34 @@ void SplitInput::initLayout()
         app->fonts->getFont(FontStyle::ChatMedium, this->scale()));
     QObject::connect(this->ui_.textEdit, &QTextEdit::cursorPositionChanged,
                      this, &SplitInput::onCursorPositionChanged);
+    QObject::connect(this->ui_.textEdit, &QTextEdit::textChanged, this,
+                     &SplitInput::onTextChanged);
 
-    this->managedConnections_.push_back(app->fonts->fontChanged.connect([=]() {
-        this->ui_.textEdit->setFont(
-            app->fonts->getFont(FontStyle::ChatMedium, this->scale()));
-    }));
+    this->managedConnections_.managedConnect(
+        app->fonts->fontChanged, [=, this]() {
+            this->ui_.textEdit->setFont(
+                app->fonts->getFont(FontStyle::ChatMedium, this->scale()));
+            this->ui_.replyLabel->setFont(
+                app->fonts->getFont(FontStyle::ChatMediumBold, this->scale()));
+        });
 
     // open emote popup
-    QObject::connect(this->ui_.emoteButton, &EffectLabel::leftClicked, [=] {
+    QObject::connect(this->ui_.emoteButton, &EffectLabel::leftClicked, [this] {
         this->openEmotePopup();
     });
 
-    // clear channelview selection when selecting in the input
+    // clear input and remove reply thread
+    QObject::connect(this->ui_.cancelReplyButton, &EffectLabel::leftClicked,
+                     [this] {
+                         this->clearInput();
+                     });
+
+    // Forward selection change signal
     QObject::connect(this->ui_.textEdit, &QTextEdit::copyAvailable,
                      [this](bool available) {
                          if (available)
                          {
-                             this->split_->view_->clearSelection();
+                             this->selectionChanged.invoke();
                          }
                      });
 
@@ -117,13 +177,22 @@ void SplitInput::initLayout()
 
 void SplitInput::scaleChangedEvent(float scale)
 {
-    // update the icon size of the emote button
+    auto app = getApp();
+    // update the icon size of the buttons
     this->updateEmoteButton();
+    this->updateCancelReplyButton();
 
     // set maximum height
-    this->setMaximumHeight(int(150 * this->scale()));
+    if (!this->hidden)
+    {
+        this->setMaximumHeight(this->scaledMaxHeight());
+    }
     this->ui_.textEdit->setFont(
-        getApp()->fonts->getFont(FontStyle::ChatMedium, this->scale()));
+        app->fonts->getFont(FontStyle::ChatMedium, this->scale()));
+    this->ui_.textEditLength->setFont(
+        app->fonts->getFont(FontStyle::ChatMedium, this->scale()));
+    this->ui_.replyLabel->setFont(
+        app->fonts->getFont(FontStyle::ChatMediumBold, this->scale()));
 }
 
 void SplitInput::themeChangedEvent()
@@ -131,20 +200,33 @@ void SplitInput::themeChangedEvent()
     QPalette palette, placeholderPalette;
 
     palette.setColor(QPalette::WindowText, this->theme->splits.input.text);
+#if (QT_VERSION >= QT_VERSION_CHECK(5, 12, 0))
     placeholderPalette.setColor(
         QPalette::PlaceholderText,
         this->theme->messages.textColors.chatPlaceholder);
+#endif
 
     this->updateEmoteButton();
+    this->updateCancelReplyButton();
     this->ui_.textEditLength->setPalette(palette);
 
-    this->ui_.textEdit->setPalette(placeholderPalette);
     this->ui_.textEdit->setStyleSheet(this->theme->splits.input.styleSheet);
-
-    this->ui_.hbox->setMargin(
-        int((this->theme->isLightTheme() ? 4 : 2) * this->scale()));
+#if (QT_VERSION >= QT_VERSION_CHECK(5, 12, 0))
+    this->ui_.textEdit->setPalette(placeholderPalette);
+#endif
+    auto marginPx = (this->theme->isLightTheme() ? 4 : 2) * this->scale();
+    this->ui_.vbox->setContentsMargins(marginPx, marginPx, marginPx, marginPx);
 
     this->ui_.emoteButton->getLabel().setStyleSheet("color: #000");
+
+    if (this->theme->isLightTheme())
+    {
+        this->ui_.replyLabel->setStyleSheet("color: #333");
+    }
+    else
+    {
+        this->ui_.replyLabel->setStyleSheet("color: #ccc");
+    }
 }
 
 void SplitInput::updateEmoteButton()
@@ -161,6 +243,24 @@ void SplitInput::updateEmoteButton()
 
     this->ui_.emoteButton->getLabel().setText(text);
     this->ui_.emoteButton->setFixedHeight(int(18 * scale));
+}
+
+void SplitInput::updateCancelReplyButton()
+{
+    float scale = this->scale();
+
+    QString text =
+        QStringLiteral(
+            "<img src=':/buttons/cancel.svg' width='%1' height='%1' />")
+            .arg(QString::number(int(12 * scale)));
+
+    if (this->theme->isLightTheme())
+    {
+        text.replace("cancel", "cancelDark");
+    }
+
+    this->ui_.cancelReplyButton->getLabel().setText(text);
+    this->ui_.cancelReplyButton->setFixedHeight(int(12 * scale));
 }
 
 void SplitInput::openEmotePopup()
@@ -192,15 +292,342 @@ void SplitInput::openEmotePopup()
                               int(500 * this->emotePopup_->scale()));
     this->emotePopup_->loadChannel(this->split_->getChannel());
     this->emotePopup_->show();
+    this->emotePopup_->raise();
     this->emotePopup_->activateWindow();
+}
+
+QString SplitInput::handleSendMessage(std::vector<QString> &arguments)
+{
+    auto c = this->split_->getChannel();
+    if (c == nullptr)
+        return "";
+
+    if (!c->isTwitchChannel() || this->replyThread_ == nullptr)
+    {
+        // standard message send behavior
+        QString message = ui_.textEdit->toPlainText();
+
+        message = message.replace('\n', ' ');
+        QString sendMessage =
+            getApp()->commands->execCommand(message, c, false);
+
+        c->sendMessage(sendMessage);
+
+        this->postMessageSend(message, arguments);
+        return "";
+    }
+    else
+    {
+        // Reply to message
+        auto tc = dynamic_cast<TwitchChannel *>(c.get());
+        if (!tc)
+        {
+            // this should not fail
+            return "";
+        }
+
+        QString message = this->ui_.textEdit->toPlainText();
+
+        if (this->enableInlineReplying_)
+        {
+            // Remove @username prefix that is inserted when doing inline replies
+            message.remove(0, this->replyThread_->root()->displayName.length() +
+                                  1);  // remove "@username"
+
+            if (!message.isEmpty() && message.at(0) == ' ')
+            {
+                message.remove(0, 1);  // remove possible space
+            }
+        }
+
+        message = message.replace('\n', ' ');
+        QString sendMessage =
+            getApp()->commands->execCommand(message, c, false);
+
+        // Reply within TwitchChannel
+        tc->sendReply(sendMessage, this->replyThread_->rootId());
+
+        this->postMessageSend(message, arguments);
+        return "";
+    }
+}
+
+void SplitInput::postMessageSend(const QString &message,
+                                 const std::vector<QString> &arguments)
+{
+    // don't add duplicate messages and empty message to message history
+    if ((this->prevMsg_.isEmpty() || !this->prevMsg_.endsWith(message)) &&
+        !message.trimmed().isEmpty())
+    {
+        this->prevMsg_.append(message);
+    }
+
+    if (arguments.empty() || arguments.at(0) != "keepInput")
+    {
+        this->clearInput();
+    }
+    this->prevIndex_ = this->prevMsg_.size();
+}
+
+int SplitInput::scaledMaxHeight() const
+{
+    return int(150 * this->scale());
+}
+
+void SplitInput::addShortcuts()
+{
+    HotkeyController::HotkeyMap actions{
+        {"cursorToStart",
+         [this](std::vector<QString> arguments) -> QString {
+             if (arguments.size() != 1)
+             {
+                 qCWarning(chatterinoHotkeys)
+                     << "Invalid cursorToStart arguments. Argument 0: select "
+                        "(\"withSelection\" or \"withoutSelection\")";
+                 return "Invalid cursorToStart arguments. Argument 0: select "
+                        "(\"withSelection\" or \"withoutSelection\")";
+             }
+             QTextCursor cursor = this->ui_.textEdit->textCursor();
+             auto place = QTextCursor::Start;
+             auto stringTakeSelection = arguments.at(0);
+             bool select;
+             if (stringTakeSelection == "withSelection")
+             {
+                 select = true;
+             }
+             else if (stringTakeSelection == "withoutSelection")
+             {
+                 select = false;
+             }
+             else
+             {
+                 qCWarning(chatterinoHotkeys)
+                     << "Invalid cursorToStart select argument (0)!";
+                 return "Invalid cursorToStart select argument (0)!";
+             }
+
+             cursor.movePosition(place,
+                                 select ? QTextCursor::MoveMode::KeepAnchor
+                                        : QTextCursor::MoveMode::MoveAnchor);
+             this->ui_.textEdit->setTextCursor(cursor);
+             return "";
+         }},
+        {"cursorToEnd",
+         [this](std::vector<QString> arguments) -> QString {
+             if (arguments.size() != 1)
+             {
+                 qCWarning(chatterinoHotkeys)
+                     << "Invalid cursorToEnd arguments. Argument 0: select "
+                        "(\"withSelection\" or \"withoutSelection\")";
+                 return "Invalid cursorToEnd arguments. Argument 0: select "
+                        "(\"withSelection\" or \"withoutSelection\")";
+             }
+             QTextCursor cursor = this->ui_.textEdit->textCursor();
+             auto place = QTextCursor::End;
+             auto stringTakeSelection = arguments.at(0);
+             bool select;
+             if (stringTakeSelection == "withSelection")
+             {
+                 select = true;
+             }
+             else if (stringTakeSelection == "withoutSelection")
+             {
+                 select = false;
+             }
+             else
+             {
+                 qCWarning(chatterinoHotkeys)
+                     << "Invalid cursorToEnd select argument (0)!";
+                 return "Invalid cursorToEnd select argument (0)!";
+             }
+
+             cursor.movePosition(place,
+                                 select ? QTextCursor::MoveMode::KeepAnchor
+                                        : QTextCursor::MoveMode::MoveAnchor);
+             this->ui_.textEdit->setTextCursor(cursor);
+             return "";
+         }},
+        {"openEmotesPopup",
+         [this](std::vector<QString>) -> QString {
+             this->openEmotePopup();
+             return "";
+         }},
+        {"sendMessage",
+         [this](std::vector<QString> arguments) -> QString {
+             return this->handleSendMessage(arguments);
+         }},
+        {"previousMessage",
+         [this](std::vector<QString>) -> QString {
+             if (this->prevMsg_.size() && this->prevIndex_)
+             {
+                 if (this->prevIndex_ == (this->prevMsg_.size()))
+                 {
+                     this->currMsg_ = ui_.textEdit->toPlainText();
+                 }
+
+                 this->prevIndex_--;
+                 this->ui_.textEdit->setPlainText(
+                     this->prevMsg_.at(this->prevIndex_));
+                 this->ui_.textEdit->resetCompletion();
+
+                 QTextCursor cursor = this->ui_.textEdit->textCursor();
+                 cursor.movePosition(QTextCursor::End);
+                 this->ui_.textEdit->setTextCursor(cursor);
+             }
+             return "";
+         }},
+        {"nextMessage",
+         [this](std::vector<QString>) -> QString {
+             // If user did not write anything before then just do nothing.
+             if (this->prevMsg_.isEmpty())
+             {
+                 return "";
+             }
+             bool cursorToEnd = true;
+             QString message = ui_.textEdit->toPlainText();
+
+             if (this->prevIndex_ != (this->prevMsg_.size() - 1) &&
+                 this->prevIndex_ != this->prevMsg_.size())
+             {
+                 this->prevIndex_++;
+                 this->ui_.textEdit->setPlainText(
+                     this->prevMsg_.at(this->prevIndex_));
+                 this->ui_.textEdit->resetCompletion();
+             }
+             else
+             {
+                 this->prevIndex_ = this->prevMsg_.size();
+                 if (message == this->prevMsg_.at(this->prevIndex_ - 1))
+                 {
+                     // If user has just come from a message history
+                     // Then simply get currMsg_.
+                     this->ui_.textEdit->setPlainText(this->currMsg_);
+                     this->ui_.textEdit->resetCompletion();
+                 }
+                 else if (message != this->currMsg_)
+                 {
+                     // If user are already in current message
+                     // And type something new
+                     // Then replace currMsg_ with new one.
+                     this->currMsg_ = message;
+                 }
+                 // If user is already in current message
+                 // Then don't touch cursos.
+                 cursorToEnd =
+                     (message == this->prevMsg_.at(this->prevIndex_ - 1));
+             }
+
+             if (cursorToEnd)
+             {
+                 QTextCursor cursor = this->ui_.textEdit->textCursor();
+                 cursor.movePosition(QTextCursor::End);
+                 this->ui_.textEdit->setTextCursor(cursor);
+             }
+             return "";
+         }},
+        {"undo",
+         [this](std::vector<QString>) -> QString {
+             this->ui_.textEdit->undo();
+             return "";
+         }},
+        {"redo",
+         [this](std::vector<QString>) -> QString {
+             this->ui_.textEdit->redo();
+             return "";
+         }},
+        {"copy",
+         [this](std::vector<QString> arguments) -> QString {
+             // XXX: this action is unused at the moment, a qt standard shortcut is used instead
+             if (arguments.size() == 0)
+             {
+                 return "copy action takes only one argument: the source "
+                        "of the copy \"split\", \"input\" or "
+                        "\"auto\". If the source is \"split\", only text "
+                        "from the chat will be copied. If it is "
+                        "\"splitInput\", text from the input box will be "
+                        "copied. Automatic will pick whichever has a "
+                        "selection";
+             }
+             bool copyFromSplit = false;
+             auto mode = arguments.at(0);
+             if (mode == "split")
+             {
+                 copyFromSplit = true;
+             }
+             else if (mode == "splitInput")
+             {
+                 copyFromSplit = false;
+             }
+             else if (mode == "auto")
+             {
+                 const auto &cursor = this->ui_.textEdit->textCursor();
+                 copyFromSplit = !cursor.hasSelection();
+             }
+
+             if (copyFromSplit)
+             {
+                 this->channelView_->copySelectedText();
+             }
+             else
+             {
+                 this->ui_.textEdit->copy();
+             }
+             return "";
+         }},
+        {"paste",
+         [this](std::vector<QString>) -> QString {
+             this->ui_.textEdit->paste();
+             return "";
+         }},
+        {"clear",
+         [this](std::vector<QString>) -> QString {
+             this->clearInput();
+             return "";
+         }},
+        {"selectAll",
+         [this](std::vector<QString>) -> QString {
+             this->ui_.textEdit->selectAll();
+             return "";
+         }},
+        {"selectWord",
+         [this](std::vector<QString>) -> QString {
+             auto cursor = this->ui_.textEdit->textCursor();
+             cursor.select(QTextCursor::WordUnderCursor);
+             this->ui_.textEdit->setTextCursor(cursor);
+             return "";
+         }},
+    };
+
+    this->shortcuts_ = getApp()->hotkeys->shortcutsForCategory(
+        HotkeyCategory::SplitInput, actions, this->parentWidget());
+}
+
+bool SplitInput::eventFilter(QObject *obj, QEvent *event)
+{
+    if (event->type() == QEvent::ShortcutOverride ||
+        event->type() == QEvent::Shortcut)
+    {
+        if (auto popup = this->inputCompletionPopup_.get())
+        {
+            if (popup->isVisible())
+            {
+                // Stop shortcut from triggering by saying we will handle it ourselves
+                event->accept();
+
+                // Return false means the underlying event isn't stopped, it will continue to propagate
+                return false;
+            }
+        }
+    }
+
+    return BaseWidget::eventFilter(obj, event);
 }
 
 void SplitInput::installKeyPressedEvent()
 {
-    auto app = getApp();
-
-    this->ui_.textEdit->keyPressed.connect([this, app](QKeyEvent *event) {
-        if (auto popup = this->emoteInputPopup_.get())
+    this->ui_.textEdit->keyPressed.disconnectAll();
+    this->ui_.textEdit->keyPressed.connect([this](QKeyEvent *event) {
+        if (auto *popup = this->inputCompletionPopup_.get())
         {
             if (popup->isVisible())
             {
@@ -212,337 +639,177 @@ void SplitInput::installKeyPressedEvent()
             }
         }
 
-        if (event->key() == Qt::Key_Enter || event->key() == Qt::Key_Return)
+        // One of the last remaining of it's kind, the copy shortcut.
+        // For some bizarre reason Qt doesn't want this key be rebound.
+        // TODO(Mm2PL): Revisit in Qt6, maybe something changed?
+        if ((event->key() == Qt::Key_C || event->key() == Qt::Key_Insert) &&
+            event->modifiers() == Qt::ControlModifier)
         {
-            auto c = this->split_->getChannel();
-            if (c == nullptr)
-                return;
-
-            QString message = ui_.textEdit->toPlainText();
-
-            message = message.replace('\n', ' ');
-            QString sendMessage = app->commands->execCommand(message, c, false);
-
-            c->sendMessage(sendMessage);
-            // don't add duplicate messages and empty message to message history
-            if ((this->prevMsg_.isEmpty() ||
-                 !this->prevMsg_.endsWith(message)) &&
-                !message.trimmed().isEmpty())
+            if (this->channelView_->hasSelection())
             {
-                this->prevMsg_.append(message);
-            }
-
-            event->accept();
-            if (!(event->modifiers() & Qt::ControlModifier))
-            {
-                this->currMsg_ = QString();
-                this->ui_.textEdit->setPlainText(QString());
-            }
-            this->prevIndex_ = this->prevMsg_.size();
-        }
-        else if (event->key() == Qt::Key_Up)
-        {
-            if ((event->modifiers() & Qt::ShiftModifier) != 0)
-            {
-                return;
-            }
-            if (event->modifiers() == Qt::AltModifier)
-            {
-                this->split_->actionRequested.invoke(
-                    Split::Action::SelectSplitAbove);
-            }
-            else
-            {
-                if (this->prevMsg_.size() && this->prevIndex_)
-                {
-                    if (this->prevIndex_ == (this->prevMsg_.size()))
-                    {
-                        this->currMsg_ = ui_.textEdit->toPlainText();
-                    }
-
-                    this->prevIndex_--;
-                    this->ui_.textEdit->setPlainText(
-                        this->prevMsg_.at(this->prevIndex_));
-
-                    QTextCursor cursor = this->ui_.textEdit->textCursor();
-                    cursor.movePosition(QTextCursor::End);
-                    this->ui_.textEdit->setTextCursor(cursor);
-
-                    // Don't let the keyboard event propagate further, we've
-                    // handled it
-                    event->accept();
-                }
-            }
-        }
-        else if (event->key() == Qt::Key_Home)
-        {
-            QTextCursor cursor = this->ui_.textEdit->textCursor();
-            cursor.movePosition(
-                QTextCursor::Start,
-                event->modifiers() & Qt::KeyboardModifier::ShiftModifier
-                    ? QTextCursor::MoveMode::KeepAnchor
-                    : QTextCursor::MoveMode::MoveAnchor);
-            this->ui_.textEdit->setTextCursor(cursor);
-
-            event->accept();
-        }
-        else if (event->key() == Qt::Key_End)
-        {
-            if (event->modifiers() == Qt::ControlModifier)
-            {
-                this->split_->getChannelView().getScrollBar().scrollToBottom(
-                    getSettings()->enableSmoothScrollingNewMessages.getValue());
-            }
-            else
-            {
-                QTextCursor cursor = this->ui_.textEdit->textCursor();
-                cursor.movePosition(
-                    QTextCursor::End,
-                    event->modifiers() & Qt::KeyboardModifier::ShiftModifier
-                        ? QTextCursor::MoveMode::KeepAnchor
-                        : QTextCursor::MoveMode::MoveAnchor);
-                this->ui_.textEdit->setTextCursor(cursor);
-            }
-            event->accept();
-        }
-        else if (event->key() == Qt::Key_H &&
-                 event->modifiers() == Qt::AltModifier)
-        {
-            // h: vim binding for left
-            this->split_->actionRequested.invoke(
-                Split::Action::SelectSplitLeft);
-
-            event->accept();
-        }
-        else if (event->key() == Qt::Key_J &&
-                 event->modifiers() == Qt::AltModifier)
-        {
-            // j: vim binding for down
-            this->split_->actionRequested.invoke(
-                Split::Action::SelectSplitBelow);
-
-            event->accept();
-        }
-        else if (event->key() == Qt::Key_K &&
-                 event->modifiers() == Qt::AltModifier)
-        {
-            // k: vim binding for up
-            this->split_->actionRequested.invoke(
-                Split::Action::SelectSplitAbove);
-
-            event->accept();
-        }
-        else if (event->key() == Qt::Key_L &&
-                 event->modifiers() == Qt::AltModifier)
-        {
-            // l: vim binding for right
-            this->split_->actionRequested.invoke(
-                Split::Action::SelectSplitRight);
-
-            event->accept();
-        }
-        else if (event->key() == Qt::Key_Down)
-        {
-            if ((event->modifiers() & Qt::ShiftModifier) != 0)
-            {
-                return;
-            }
-            if (event->modifiers() == Qt::AltModifier)
-            {
-                this->split_->actionRequested.invoke(
-                    Split::Action::SelectSplitBelow);
-            }
-            else
-            {
-                // If user did not write anything before then just do nothing.
-                if (this->prevMsg_.isEmpty())
-                {
-                    return;
-                }
-                bool cursorToEnd = true;
-                QString message = ui_.textEdit->toPlainText();
-
-                if (this->prevIndex_ != (this->prevMsg_.size() - 1) &&
-                    this->prevIndex_ != this->prevMsg_.size())
-                {
-                    this->prevIndex_++;
-                    this->ui_.textEdit->setPlainText(
-                        this->prevMsg_.at(this->prevIndex_));
-                }
-                else
-                {
-                    this->prevIndex_ = this->prevMsg_.size();
-                    if (message == this->prevMsg_.at(this->prevIndex_ - 1))
-                    {
-                        // If user has just come from a message history
-                        // Then simply get currMsg_.
-                        this->ui_.textEdit->setPlainText(this->currMsg_);
-                    }
-                    else if (message != this->currMsg_)
-                    {
-                        // If user are already in current message
-                        // And type something new
-                        // Then replace currMsg_ with new one.
-                        this->currMsg_ = message;
-                    }
-                    // If user is already in current message
-                    // Then don't touch cursos.
-                    cursorToEnd =
-                        (message == this->prevMsg_.at(this->prevIndex_ - 1));
-                }
-
-                if (cursorToEnd)
-                {
-                    QTextCursor cursor = this->ui_.textEdit->textCursor();
-                    cursor.movePosition(QTextCursor::End);
-                    this->ui_.textEdit->setTextCursor(cursor);
-                }
-            }
-        }
-        else if (event->key() == Qt::Key_Left)
-        {
-            if (event->modifiers() == Qt::AltModifier)
-            {
-                this->split_->actionRequested.invoke(
-                    Split::Action::SelectSplitLeft);
-            }
-        }
-        else if (event->key() == Qt::Key_Right)
-        {
-            if (event->modifiers() == Qt::AltModifier)
-            {
-                this->split_->actionRequested.invoke(
-                    Split::Action::SelectSplitRight);
-            }
-        }
-        else if ((event->key() == Qt::Key_C ||
-                  event->key() == Qt::Key_Insert) &&
-                 event->modifiers() == Qt::ControlModifier)
-        {
-            if (this->split_->view_->hasSelection())
-            {
-                this->split_->copyToClipboard();
+                this->channelView_->copySelectedText();
                 event->accept();
             }
-        }
-        else if (event->key() == Qt::Key_E &&
-                 event->modifiers() == Qt::ControlModifier)
-        {
-            this->openEmotePopup();
-        }
-        else if (event->key() == Qt::Key_PageUp)
-        {
-            auto &scrollbar = this->split_->getChannelView().getScrollBar();
-            scrollbar.offset(-scrollbar.getLargeChange());
-
-            event->accept();
-        }
-        else if (event->key() == Qt::Key_PageDown)
-        {
-            auto &scrollbar = this->split_->getChannelView().getScrollBar();
-            scrollbar.offset(scrollbar.getLargeChange());
-
-            event->accept();
         }
     });
 }
 
-void SplitInput::onCursorPositionChanged()
+void SplitInput::mousePressEvent(QMouseEvent *event)
 {
-    this->updateColonMenu();
+    if (this->hidden)
+    {
+        BaseWidget::mousePressEvent(event);
+    }
+    // else, don't call QWidget::mousePressEvent,
+    // which will call event->ignore()
 }
 
-void SplitInput::updateColonMenu()
+void SplitInput::onTextChanged()
 {
-    auto channel = this->split_->getChannel().get();
-    if (!getSettings()->emoteCompletionWithColon ||
-        (!dynamic_cast<TwitchChannel *>(channel) &&
-         !(channel->getType() == Channel::Type::TwitchWhispers)))
+    this->updateCompletionPopup();
+}
+
+void SplitInput::onCursorPositionChanged()
+{
+    this->updateCompletionPopup();
+}
+
+void SplitInput::updateCompletionPopup()
+{
+    auto *channel = this->split_->getChannel().get();
+    auto *tc = dynamic_cast<TwitchChannel *>(channel);
+    bool showEmoteCompletion = getSettings()->emoteCompletionWithColon;
+    bool showUsernameCompletion =
+        tc != nullptr && getSettings()->showUsernameCompletionMenu;
+    if (!showEmoteCompletion && !showUsernameCompletion)
     {
-        this->hideColonMenu();
+        this->hideCompletionPopup();
         return;
     }
 
-    // check if in :
+    // check if in completion prefix
     auto &edit = *this->ui_.textEdit;
 
     auto text = edit.toPlainText();
     auto position = edit.textCursor().position() - 1;
 
-    if (text.length() == 0)
+    if (text.length() == 0 || position == -1)
     {
-        this->hideColonMenu();
+        this->hideCompletionPopup();
         return;
     }
 
-    for (int i = clamp(position, 0, text.length() - 1); i >= 0; i--)
+    for (int i = clamp(position, 0, (int)text.length() - 1); i >= 0; i--)
     {
         if (text[i] == ' ')
         {
-            this->hideColonMenu();
+            this->hideCompletionPopup();
             return;
         }
-        else if (text[i] == ':')
+
+        if (text[i] == ':' && showEmoteCompletion)
         {
             if (i == 0 || text[i - 1].isSpace())
-                this->showColonMenu(text.mid(i, position - i + 1).mid(1));
+            {
+                this->showCompletionPopup(text.mid(i, position - i + 1).mid(1),
+                                          true);
+            }
             else
-                this->hideColonMenu();
+            {
+                this->hideCompletionPopup();
+            }
+            return;
+        }
+
+        if (text[i] == '@' && showUsernameCompletion)
+        {
+            if (i == 0 || text[i - 1].isSpace())
+            {
+                this->showCompletionPopup(text.mid(i, position - i + 1).mid(1),
+                                          false);
+            }
+            else
+            {
+                this->hideCompletionPopup();
+            }
             return;
         }
     }
 
-    this->hideColonMenu();
+    this->hideCompletionPopup();
 }
 
-void SplitInput::showColonMenu(const QString &text)
+void SplitInput::showCompletionPopup(const QString &text, bool emoteCompletion)
 {
-    if (!this->emoteInputPopup_.get())
+    if (!this->inputCompletionPopup_.get())
     {
-        this->emoteInputPopup_ = new EmoteInputPopup(this);
-        this->emoteInputPopup_->setInputAction(
+        this->inputCompletionPopup_ = new InputCompletionPopup(this);
+        this->inputCompletionPopup_->setInputAction(
             [that = QObjectRef(this)](const QString &text) mutable {
-                if (auto this2 = that.get())
+                if (auto *this2 = that.get())
                 {
-                    this2->insertColonText(text);
-                    this2->hideColonMenu();
+                    this2->insertCompletionText(text);
+                    this2->hideCompletionPopup();
                 }
             });
     }
 
-    auto popup = this->emoteInputPopup_.get();
+    auto *popup = this->inputCompletionPopup_.get();
     assert(popup);
 
-    popup->updateEmotes(text, this->split_->getChannel());
+    if (emoteCompletion)
+    {
+        popup->updateEmotes(text, this->split_->getChannel());
+    }
+    else
+    {
+        popup->updateUsers(text, this->split_->getChannel());
+    }
 
-    auto pos = this->mapToGlobal({0, 0}) - QPoint(0, popup->height()) +
+    auto pos = this->mapToGlobal(QPoint{0, 0}) - QPoint(0, popup->height()) +
                QPoint((this->width() - popup->width()) / 2, 0);
 
     popup->move(pos);
     popup->show();
 }
 
-void SplitInput::hideColonMenu()
+void SplitInput::hideCompletionPopup()
 {
-    if (auto popup = this->emoteInputPopup_.get())
+    if (auto *popup = this->inputCompletionPopup_.get())
+    {
         popup->hide();
+    }
 }
 
-void SplitInput::insertColonText(const QString &input_)
+void SplitInput::insertCompletionText(const QString &input_) const
 {
     auto &edit = *this->ui_.textEdit;
     auto input = input_ + ' ';
 
     auto text = edit.toPlainText();
-    auto position = edit.textCursor().position();
+    auto position = edit.textCursor().position() - 1;
 
-    for (int i = clamp(position, 0, text.length() - 1); i >= 0; i--)
+    for (int i = clamp(position, 0, (int)text.length() - 1); i >= 0; i--)
     {
+        bool done = false;
         if (text[i] == ':')
         {
-            auto cursor = edit.textCursor();
+            done = true;
+        }
+        else if (text[i] == '@')
+        {
+            const auto userMention =
+                formatUserMention(input_, edit.isFirstWord(),
+                                  getSettings()->mentionUsersWithComma);
+            input = "@" + userMention + " ";
+            done = true;
+        }
 
-            edit.setText(text.remove(i, position - i).insert(i, input));
+        if (done)
+        {
+            auto cursor = edit.textCursor();
+            edit.setPlainText(
+                text.remove(i, position - i + 1).insert(i, input));
 
             cursor.setPosition(i + input.size());
             edit.setTextCursor(cursor);
@@ -551,14 +818,21 @@ void SplitInput::insertColonText(const QString &input_)
     }
 }
 
-void SplitInput::clearSelection()
+bool SplitInput::hasSelection() const
 {
-    QTextCursor c = this->ui_.textEdit->textCursor();
+    return this->ui_.textEdit->textCursor().hasSelection();
+}
 
-    c.setPosition(c.position());
-    c.setPosition(c.position(), QTextCursor::KeepAnchor);
+void SplitInput::clearSelection() const
+{
+    auto cursor = this->ui_.textEdit->textCursor();
+    cursor.clearSelection();
+    this->ui_.textEdit->setTextCursor(cursor);
+}
 
-    this->ui_.textEdit->setTextCursor(c);
+bool SplitInput::isEditFirstWord() const
+{
+    return this->ui_.textEdit->isFirstWord();
 }
 
 QString SplitInput::getInputText() const
@@ -571,6 +845,35 @@ void SplitInput::insertText(const QString &text)
     this->ui_.textEdit->insertPlainText(text);
 }
 
+void SplitInput::hide()
+{
+    if (this->isHidden())
+    {
+        return;
+    }
+
+    this->hidden = true;
+    this->setMaximumHeight(0);
+    this->updateGeometry();
+}
+
+void SplitInput::show()
+{
+    if (!this->isHidden())
+    {
+        return;
+    }
+
+    this->hidden = false;
+    this->setMaximumHeight(this->scaledMaxHeight());
+    this->updateGeometry();
+}
+
+bool SplitInput::isHidden() const
+{
+    return this->hidden;
+}
+
 void SplitInput::editTextChanged()
 {
     auto app = getApp();
@@ -578,10 +881,17 @@ void SplitInput::editTextChanged()
     // set textLengthLabel value
     QString text = this->ui_.textEdit->toPlainText();
 
+    if (this->shouldPreventInput(text))
+    {
+        this->ui_.textEdit->setPlainText(text.left(TWITCH_MESSAGE_LIMIT));
+        this->ui_.textEdit->moveCursor(QTextCursor::EndOfBlock);
+        return;
+    }
+
     if (text.startsWith("/r ", Qt::CaseInsensitive) &&
         this->split_->getChannel()->isTwitchChannel())
     {
-        QString lastUser = app->twitch.server->lastUserThatWhisperedMe.get();
+        QString lastUser = app->twitch->lastUserThatWhisperedMe.get();
         if (!lastUser.isEmpty())
         {
             this->ui_.textEdit->setPlainText("/w " + lastUser + text.mid(2));
@@ -593,11 +903,34 @@ void SplitInput::editTextChanged()
         this->textChanged.invoke(text);
 
         text = text.trimmed();
-        static QRegularExpression spaceRegex("\\s\\s+");
-        text = text.replace(spaceRegex, " ");
-
         text =
             app->commands->execCommand(text, this->split_->getChannel(), true);
+    }
+
+    if (text.length() > 0 &&
+        getSettings()->messageOverflow.getValue() == MessageOverflow::Highlight)
+    {
+        QTextCursor cursor = this->ui_.textEdit->textCursor();
+        QTextCharFormat format;
+        QList<QTextEdit::ExtraSelection> selections;
+
+        cursor.setPosition(qMin(text.length(), TWITCH_MESSAGE_LIMIT),
+                           QTextCursor::MoveAnchor);
+        cursor.movePosition(QTextCursor::Start, QTextCursor::KeepAnchor);
+        selections.append({cursor, format});
+
+        if (text.length() > TWITCH_MESSAGE_LIMIT)
+        {
+            cursor.setPosition(TWITCH_MESSAGE_LIMIT, QTextCursor::MoveAnchor);
+            cursor.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
+            format.setForeground(Qt::red);
+            selections.append({cursor, format});
+        }
+        // block reemit of QTextEdit::textChanged()
+        {
+            const QSignalBlocker b(this->ui_.textEdit);
+            this->ui_.textEdit->setExtraSelections(selections);
+        }
     }
 
     QString labelText;
@@ -620,37 +953,71 @@ void SplitInput::editTextChanged()
     }
 
     this->ui_.textEditLength->setText(labelText);
+
+    bool hasReply = false;
+    if (this->enableInlineReplying_)
+    {
+        if (this->replyThread_ != nullptr)
+        {
+            // Check if the input still starts with @username. If not, don't reply.
+            //
+            // We need to verify that
+            // 1. the @username prefix exists and
+            // 2. if a character exists after the @username, it is a space
+            QString replyPrefix = "@" + this->replyThread_->root()->displayName;
+            if (!text.startsWith(replyPrefix) ||
+                (text.length() > replyPrefix.length() &&
+                 text.at(replyPrefix.length()) != ' '))
+            {
+                this->replyThread_ = nullptr;
+            }
+        }
+
+        // Show/hide reply label if inline replies are possible
+        hasReply = this->replyThread_ != nullptr;
+    }
+
+    this->ui_.replyWrapper->setVisible(hasReply);
+    this->ui_.replyLabel->setVisible(hasReply);
+    this->ui_.cancelReplyButton->setVisible(hasReply);
 }
 
-void SplitInput::paintEvent(QPaintEvent *)
+void SplitInput::paintEvent(QPaintEvent * /*event*/)
 {
     QPainter painter(this);
 
+    int s;
+    QColor borderColor;
+
     if (this->theme->isLightTheme())
     {
-        int s = int(3 * this->scale());
-        QRect rect = this->rect().marginsRemoved(QMargins(s - 1, s - 1, s, s));
-
-        painter.fillRect(rect, this->theme->splits.input.background);
-
-        painter.setPen(QColor("#ccc"));
-        painter.drawRect(rect);
+        s = int(3 * this->scale());
+        borderColor = QColor("#ccc");
     }
     else
     {
-        int s = int(1 * this->scale());
-        QRect rect = this->rect().marginsRemoved(QMargins(s - 1, s - 1, s, s));
-
-        painter.fillRect(rect, this->theme->splits.input.background);
-
-        painter.setPen(QColor("#333"));
-        painter.drawRect(rect);
+        s = int(1 * this->scale());
+        borderColor = QColor("#333");
     }
 
-    //    int offset = 2;
-    //    painter.fillRect(offset, this->height() - offset, this->width() - 2 *
-    //    offset, 1,
-    //                     getApp()->themes->splits.input.focusedLine);
+    QMargins removeMargins(s - 1, s - 1, s, s);
+    QRect baseRect = this->rect();
+
+    // completeAreaRect includes the reply label
+    QRect completeAreaRect = baseRect.marginsRemoved(removeMargins);
+    painter.fillRect(completeAreaRect, this->theme->splits.input.background);
+    painter.setPen(borderColor);
+    painter.drawRect(completeAreaRect);
+
+    if (this->enableInlineReplying_ && this->replyThread_ != nullptr)
+    {
+        // Move top of rect down to not include reply label
+        baseRect.setTop(baseRect.top() + this->ui_.replyWrapper->height());
+
+        QRect onlyInputRect = baseRect.marginsRemoved(removeMargins);
+        painter.setPen(borderColor);
+        painter.drawRect(onlyInputRect);
+    }
 }
 
 void SplitInput::resizeEvent(QResizeEvent *)
@@ -665,9 +1032,73 @@ void SplitInput::resizeEvent(QResizeEvent *)
     }
 }
 
-void SplitInput::mousePressEvent(QMouseEvent *)
+void SplitInput::giveFocus(Qt::FocusReason reason)
 {
-    this->split_->giveFocus(Qt::MouseFocusReason);
+    this->ui_.textEdit->setFocus(reason);
+}
+
+void SplitInput::setReply(std::shared_ptr<MessageThread> reply,
+                          bool showReplyingLabel)
+{
+    this->replyThread_ = std::move(reply);
+
+    if (this->enableInlineReplying_)
+    {
+        // Only enable reply label if inline replying
+        auto replyPrefix = "@" + this->replyThread_->root()->displayName;
+        auto plainText = this->ui_.textEdit->toPlainText().trimmed();
+        if (!plainText.startsWith(replyPrefix))
+        {
+            if (!plainText.isEmpty())
+            {
+                replyPrefix.append(' ');
+            }
+            this->ui_.textEdit->setPlainText(replyPrefix + plainText + " ");
+            this->ui_.textEdit->moveCursor(QTextCursor::EndOfBlock);
+            this->ui_.textEdit->resetCompletion();
+        }
+        this->ui_.replyLabel->setText("Replying to @" +
+                                      this->replyThread_->root()->displayName);
+    }
+}
+
+void SplitInput::setPlaceholderText(const QString &text)
+{
+    this->ui_.textEdit->setPlaceholderText(text);
+}
+
+void SplitInput::clearInput()
+{
+    this->currMsg_ = "";
+    this->ui_.textEdit->setText("");
+    this->ui_.textEdit->moveCursor(QTextCursor::Start);
+    if (this->enableInlineReplying_)
+    {
+        this->replyThread_ = nullptr;
+    }
+}
+
+bool SplitInput::shouldPreventInput(const QString &text) const
+{
+    if (getSettings()->messageOverflow.getValue() != MessageOverflow::Prevent)
+    {
+        return false;
+    }
+
+    auto channel = this->split_->getChannel();
+
+    if (channel == nullptr)
+    {
+        return false;
+    }
+
+    if (!channel->isTwitchChannel())
+    {
+        // Don't respect this setting for IRC channels as the limits might be server-specific
+        return false;
+    }
+
+    return text.length() > TWITCH_MESSAGE_LIMIT;
 }
 
 }  // namespace chatterino
