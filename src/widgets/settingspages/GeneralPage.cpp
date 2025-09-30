@@ -360,8 +360,9 @@ void GeneralPage::initLayout(GeneralPageView &layout)
                                     std::numeric_limits<float>::infinity());
             }
         });
-    layout.addCheckbox("Only pause on mouse hover when the 'Pause while holding a key' key is held",
-                       s.onlyPauseOnHoverWithPauseChatModifier);
+    SettingWidget::checkbox("Only pause on mouse hover when the 'Pause while holding a key' key is held",
+                            s.onlyPauseOnHoverWithPauseChatModifier)
+        ->addTo(layout);
     addKeyboardModifierSetting(layout, "Pause while holding a key",
                                s.pauseChatModifier);
     layout.addDropdown<float>(
