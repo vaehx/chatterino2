@@ -1,9 +1,15 @@
 #include "util/Helpers.hpp"
 
-#include <gtest/gtest.h>
+#include "mocks/BaseApplication.hpp"
+#include "Test.hpp"
+
+#include <QDateTime>
+#include <QTimeZone>
+
+#include <span>
 
 using namespace chatterino;
-using namespace _helpers_internal;
+using namespace helpers::detail;
 
 TEST(Helpers, formatUserMention)
 {
@@ -256,8 +262,8 @@ TEST(Helpers, skipSpace)
 {
     struct TestCase {
         QString input;
-        int startIdx;
-        int expected;
+        SizeType startIdx;
+        SizeType expected;
     };
 
     std::vector<TestCase> tests{{"foo    bar", 3, 6}, {"foo bar", 3, 3},
@@ -266,11 +272,11 @@ TEST(Helpers, skipSpace)
 
     for (const auto &c : tests)
     {
-        const auto actual = skipSpace(&c.input, c.startIdx);
+        const auto actual = skipSpace(c.input, c.startIdx);
 
         EXPECT_EQ(actual, c.expected)
-            << actual << " (" << qUtf8Printable(c.input)
-            << ") did not match expected value " << c.expected;
+            << actual << " (" << c.input << ") did not match expected value "
+            << c.expected;
     }
 }
 
@@ -286,8 +292,8 @@ TEST(Helpers, findUnitMultiplierToSec)
 
     struct TestCase {
         QString input;
-        int startPos;
-        int expectedEndPos;
+        SizeType startPos;
+        SizeType expectedEndPos;
         uint64_t expectedMultiplier;
     };
 
@@ -407,19 +413,18 @@ TEST(Helpers, findUnitMultiplierToSec)
 
     for (const auto &c : tests)
     {
-        int pos = c.startPos;
-        const auto actual = findUnitMultiplierToSec(&c.input, pos);
+        SizeType pos = c.startPos;
+        const auto actual = findUnitMultiplierToSec(c.input, pos);
 
         if (c.expectedMultiplier == bad)
         {
-            EXPECT_FALSE(actual.second) << qUtf8Printable(c.input);
+            EXPECT_FALSE(actual.second) << c.input;
         }
         else
         {
             EXPECT_TRUE(pos == c.expectedEndPos && actual.second &&
                         actual.first == c.expectedMultiplier)
-                << qUtf8Printable(c.input)
-                << ": Expected(end: " << c.expectedEndPos
+                << c.input << ": Expected(end: " << c.expectedEndPos
                 << ", mult: " << c.expectedMultiplier << ") Actual(end: " << pos
                 << ", mult: " << actual.first << ")";
         }
@@ -497,7 +502,137 @@ TEST(Helpers, parseDurationToSeconds)
         const auto actual = parseDurationToSeconds(c.input, c.noUnitMultiplier);
 
         EXPECT_EQ(actual, c.output)
-            << actual << " (" << qUtf8Printable(c.input)
-            << ") did not match expected value " << c.output;
+            << actual << " (" << c.input << ") did not match expected value "
+            << c.output;
     }
+}
+
+TEST(Helpers, unescapeZeroWidthJoiner)
+{
+    struct TestCase {
+        QStringView input;
+        QStringView output;
+    };
+
+    std::vector<TestCase> tests{
+        {u"foo bar", u"foo bar"},
+        {u"", u""},
+        {u"a", u"a"},
+        {u"\U000E0002", u"\u200D"},
+        {u"foo\U000E0002bar", u"foo\u200Dbar"},
+        {u"foo \U000E0002 bar", u"foo \u200D bar"},
+        {u"\U0001F468\U000E0002\U0001F33E", u"\U0001F468\u200D\U0001F33E"},
+        // don't replace ZWJ
+        {u"\U0001F468\u200D\U0001F33E", u"\U0001F468\u200D\U0001F33E"},
+        // only replace the first escape tag in sequences
+        {
+            u"\U0001F468\U000E0002\U000E0002\U0001F33E",
+            u"\U0001F468\u200D\U000E0002\U0001F33E",
+        },
+        {
+            u"\U0001F468\U000E0002\U000E0002\U000E0002\U0001F33E",
+            u"\U0001F468\u200D\U000E0002\U000E0002\U0001F33E",
+        },
+    };
+
+    // sanity check that the compiler supports unicode string literals
+    static_assert(
+        [] {
+            constexpr std::span zwj = u"\u200D";
+            static_assert(zwj.size() == 2);
+            static_assert(zwj[0] == u'\x200D');
+            static_assert(zwj[1] == u'\0');
+
+            constexpr std::span escapeTag = u"\U000E0002";
+            static_assert(escapeTag.size() == 3);
+            static_assert(escapeTag[0] == u'\xDB40');
+            static_assert(escapeTag[1] == u'\xDC02');
+            static_assert(escapeTag[2] == u'\0');
+
+            return true;
+        }(),
+        "The compiler must support Unicode string literals");
+
+    for (const auto &c : tests)
+    {
+        const auto actual = unescapeZeroWidthJoiner(c.input.toString());
+
+        EXPECT_EQ(actual, c.output);
+    }
+}
+
+TEST(Helpers, chronoToQDateTime)
+{
+    mock::BaseApplication app;
+
+    auto epoch = chronoToQDateTime({});
+    ASSERT_EQ(epoch.timeZone(), QTimeZone::utc());
+    ASSERT_EQ(epoch.toMSecsSinceEpoch(), 0);
+
+    std::chrono::milliseconds somePointSinceEpoch{1740574189131};
+    auto qPointSinceEpoch = chronoToQDateTime(
+        std::chrono::system_clock::time_point{somePointSinceEpoch});
+    ASSERT_EQ(qPointSinceEpoch.timeZone(), QTimeZone::utc());
+    ASSERT_EQ(qPointSinceEpoch.toMSecsSinceEpoch(),
+              somePointSinceEpoch.count());
+    ASSERT_EQ(qPointSinceEpoch.toString(Qt::ISODateWithMs),
+              "2025-02-26T12:49:49.131Z");
+}
+
+TEST(Helpers, codepointSlice)
+{
+    ASSERT_EQ(codepointSlice(u"", 0, 0), u"");
+    ASSERT_EQ(codepointSlice(u"", 0, 1), u"");
+    ASSERT_EQ(codepointSlice(u"", 1, 1), u"");
+    ASSERT_EQ(codepointSlice(u"", -1, 1), u"");
+
+    ASSERT_EQ(codepointSlice(u"a", 0, 0), u"");
+    ASSERT_EQ(codepointSlice(u"a", 0, 1), u"a");
+    ASSERT_EQ(codepointSlice(u"a", 0, 2), u"");
+    ASSERT_EQ(codepointSlice(u"a", -1, 1), u"");
+
+    ASSERT_EQ(codepointSlice(u"abcd", 1, 3), u"bc");
+    ASSERT_EQ(codepointSlice(u"abcd", 0, 3), u"abc");
+    ASSERT_EQ(codepointSlice(u"abcd", 1, 4), u"bcd");
+    ASSERT_EQ(codepointSlice(u"abcd", 0, 4), u"abcd");
+    ASSERT_EQ(codepointSlice(u"abcd", 0, 5), u"");
+    ASSERT_EQ(codepointSlice(u"abcd", 5, 0), u"");
+
+    ASSERT_EQ(codepointSlice(u"🍩🍟🥚🍳🌮🍞🌭🥞🍳", 1, 3), u"🍟🥚");
+    ASSERT_EQ(codepointSlice(u"🍩🍟🥚🍳🌮🍞🌭🥞🍳", 0, 3), u"🍩🍟🥚");
+    ASSERT_EQ(codepointSlice(u"🍩🍟🥚🍳🌮🍞🌭🥞🍳", 0, 9),
+              u"🍩🍟🥚🍳🌮🍞🌭🥞🍳");
+    ASSERT_EQ(codepointSlice(u"🍩🍟🥚🍳🌮🍞🌭🥞🍳", 3, 9), u"🍳🌮🍞🌭🥞🍳");
+    ASSERT_EQ(codepointSlice(u"🍩🍟🥚🍳🌮🍞🌭🥞🍳", 3, 10), u"");
+    ASSERT_EQ(codepointSlice(u"🍩🍟🥚🍳🌮🍞🌭🥞🍳", 3, 8), u"🍳🌮🍞🌭🥞");
+    ASSERT_EQ(codepointSlice(u"🍩🍟🥚🍳🌮🍞🌭🥞🍳", 3, 7), u"🍳🌮🍞🌭");
+    ASSERT_EQ(codepointSlice(u"🍩🍟🥚🍳🌮🍞🌭🥞🍳", 3, 4), u"🍳");
+
+    ASSERT_EQ(codepointSlice(u"🍩🍟\xD83E\xDD5A", 0, 3), u"🍩🍟🥚");
+    ASSERT_EQ(codepointSlice(u"🍩🍟\xD83E\xDD5A", 0, 4), u"");
+    ASSERT_EQ(codepointSlice(u"🍩🍟\xD83E", 0, 3), u"🍩🍟\xD83E");
+    ASSERT_EQ(codepointSlice(u"🍩🍟\xD83E🥚", 0, 4), u"🍩🍟\xD83E🥚");
+}
+
+TEST(Helpers, splitOnce)
+{
+    auto pair = [](auto first, auto second) {
+        return std::pair{QStringView(first), QStringView(second)};
+    };
+
+    ASSERT_EQ(splitOnce(u"foo bar", u" "), pair(u"foo", u"bar"));
+    ASSERT_EQ(splitOnce(u"foo bar", u"oo"), pair(u"f", u" bar"));
+    ASSERT_EQ(splitOnce(u"foo bar", u"foo"), pair(u"", u" bar"));
+    ASSERT_EQ(splitOnce(u"foo bar", u"bar"), pair(u"foo ", u""));
+    ASSERT_EQ(splitOnce(u"foo bar", u"baz"), pair(u"foo bar", u""));
+    ASSERT_EQ(splitOnce(u"foo bar", u"bars"), pair(u"foo bar", u""));
+    ASSERT_EQ(splitOnce(u"foo bar", u""), pair(u"", u"foo bar"));
+    ASSERT_EQ(splitOnce(u"", u"foo"), pair(u"", u""));
+    ASSERT_EQ(splitOnce(u"", u""), pair(u"", u""));
+
+    ASSERT_EQ(splitOnce(u"foo bar", u' '), pair(u"foo", u"bar"));
+    ASSERT_EQ(splitOnce(u"foo bar", u'f'), pair(u"", u"oo bar"));
+    ASSERT_EQ(splitOnce(u"foo bar", u'r'), pair(u"foo ba", u""));
+    ASSERT_EQ(splitOnce(u"foo bar", u'z'), pair(u"foo bar", u""));
+    ASSERT_EQ(splitOnce(u"", u'z'), pair(u"", u""));
 }

@@ -1,9 +1,10 @@
-#include "ChannelChatters.hpp"
+#include "common/ChannelChatters.hpp"
 
 #include "common/Channel.hpp"
-#include "messages/Message.hpp"
+#include "controllers/ignores/IgnoreController.hpp"
+#include "debug/AssertInGuiThread.hpp"
 #include "messages/MessageBuilder.hpp"
-#include "providers/twitch/TwitchMessageBuilder.hpp"
+#include "providers/twitch/TwitchAccount.hpp"
 
 #include <QColor>
 
@@ -26,10 +27,21 @@ void ChannelChatters::addRecentChatter(const QString &user)
     chatters->addRecentChatter(user);
 }
 
-void ChannelChatters::addJoinedUser(const QString &user)
+void ChannelChatters::addJoinedUser(const QString &user, bool isMod,
+                                    bool isBroadcaster)
 {
-    auto joinedUsers = this->joinedUsers_.access();
-    joinedUsers->append(user);
+    assertInGuiThread();
+
+    if (isIgnoredMessage(IgnoredMessageParameters{
+            .twitchUserLogin = user,
+            .isMod = isMod,
+            .isBroadcaster = isBroadcaster,
+        }))
+    {
+        return;
+    }
+
+    this->joinedUsers_.access()->append(user);
 
     if (!this->joinedUsersMergeQueued_)
     {
@@ -39,11 +51,11 @@ void ChannelChatters::addJoinedUser(const QString &user)
             auto joinedUsers = this->joinedUsers_.access();
             joinedUsers->sort();
 
-            MessageBuilder builder;
-            TwitchMessageBuilder::listOfUsersSystemMessage(
-                "Users joined:", *joinedUsers, &this->channel_, &builder);
-            builder->flags.set(MessageFlag::Collapsed);
-            this->channel_.addMessage(builder.release());
+            this->channel_.addMessage(
+                MessageBuilder::makeListOfUsersMessage(
+                    "Users joined:", *joinedUsers, &this->channel_,
+                    {MessageFlag::Collapsed}),
+                MessageContext::Original);
 
             joinedUsers->clear();
             this->joinedUsersMergeQueued_ = false;
@@ -51,10 +63,21 @@ void ChannelChatters::addJoinedUser(const QString &user)
     }
 }
 
-void ChannelChatters::addPartedUser(const QString &user)
+void ChannelChatters::addPartedUser(const QString &user, bool isMod,
+                                    bool isBroadcaster)
 {
-    auto partedUsers = this->partedUsers_.access();
-    partedUsers->append(user);
+    assertInGuiThread();
+
+    if (isIgnoredMessage(IgnoredMessageParameters{
+            .twitchUserLogin = user,
+            .isMod = isMod,
+            .isBroadcaster = isBroadcaster,
+        }))
+    {
+        return;
+    }
+
+    this->partedUsers_.access()->append(user);
 
     if (!this->partedUsersMergeQueued_)
     {
@@ -64,11 +87,11 @@ void ChannelChatters::addPartedUser(const QString &user)
             auto partedUsers = this->partedUsers_.access();
             partedUsers->sort();
 
-            MessageBuilder builder;
-            TwitchMessageBuilder::listOfUsersSystemMessage(
-                "Users parted:", *partedUsers, &this->channel_, &builder);
-            builder->flags.set(MessageFlag::Collapsed);
-            this->channel_.addMessage(builder.release());
+            this->channel_.addMessage(
+                MessageBuilder::makeListOfUsersMessage(
+                    "Users parted:", *partedUsers, &this->channel_,
+                    {MessageFlag::Collapsed}),
+                MessageContext::Original);
 
             partedUsers->clear();
             this->partedUsersMergeQueued_ = false;
@@ -89,7 +112,7 @@ size_t ChannelChatters::colorsSize() const
     return size;
 }
 
-const QColor ChannelChatters::getUserColor(const QString &user)
+QColor ChannelChatters::getUserColor(const QString &user) const
 {
     const auto chatterColors = this->chatterColors_.access();
 

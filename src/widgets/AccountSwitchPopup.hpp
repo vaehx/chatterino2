@@ -18,8 +18,9 @@ public:
     void refresh();
 
 protected:
-    void focusOutEvent(QFocusEvent *event) final;
     void paintEvent(QPaintEvent *event) override;
+
+    void themeChangedEvent() override;
 
 private:
     struct {

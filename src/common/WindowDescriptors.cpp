@@ -11,84 +11,84 @@ namespace chatterino {
 
 namespace {
 
-    QJsonArray loadWindowArray(const QString &settingsPath)
+QJsonArray loadWindowArray(const QString &settingsPath)
+{
+    QFile file(settingsPath);
+    file.open(QIODevice::ReadOnly);
+    QByteArray data = file.readAll();
+    QJsonDocument document = QJsonDocument::fromJson(data);
+    QJsonArray windows_arr = document.object().value("windows").toArray();
+    return windows_arr;
+}
+
+template <typename T>
+T loadNodes(const QJsonObject &obj)
+{
+    static_assert("loadNodes must be called with the SplitNodeDescriptor "
+                  "or ContainerNodeDescriptor type");
+}
+
+template <>
+SplitNodeDescriptor loadNodes(const QJsonObject &root)
+{
+    SplitNodeDescriptor descriptor;
+
+    descriptor.flexH_ = root.value("flexh").toDouble(1.0);
+    descriptor.flexV_ = root.value("flexv").toDouble(1.0);
+
+    auto data = root.value("data").toObject();
+
+    SplitDescriptor::loadFromJSON(descriptor, root, data);
+
+    return descriptor;
+}
+
+template <>
+ContainerNodeDescriptor loadNodes(const QJsonObject &root)
+{
+    ContainerNodeDescriptor descriptor;
+
+    descriptor.flexH_ = root.value("flexh").toDouble(1.0);
+    descriptor.flexV_ = root.value("flexv").toDouble(1.0);
+
+    descriptor.vertical_ = root.value("type").toString() == "vertical";
+
+    for (QJsonValue _val : root.value("items").toArray())
     {
-        QFile file(settingsPath);
-        file.open(QIODevice::ReadOnly);
-        QByteArray data = file.readAll();
-        QJsonDocument document = QJsonDocument::fromJson(data);
-        QJsonArray windows_arr = document.object().value("windows").toArray();
-        return windows_arr;
-    }
+        auto _obj = _val.toObject();
 
-    template <typename T>
-    T loadNodes(const QJsonObject &obj)
-    {
-        static_assert("loadNodes must be called with the SplitNodeDescriptor "
-                      "or ContainerNodeDescriptor type");
-    }
-
-    template <>
-    SplitNodeDescriptor loadNodes(const QJsonObject &root)
-    {
-        SplitNodeDescriptor descriptor;
-
-        descriptor.flexH_ = root.value("flexh").toDouble(1.0);
-        descriptor.flexV_ = root.value("flexv").toDouble(1.0);
-
-        auto data = root.value("data").toObject();
-
-        SplitDescriptor::loadFromJSON(descriptor, root, data);
-
-        return descriptor;
-    }
-
-    template <>
-    ContainerNodeDescriptor loadNodes(const QJsonObject &root)
-    {
-        ContainerNodeDescriptor descriptor;
-
-        descriptor.flexH_ = root.value("flexh").toDouble(1.0);
-        descriptor.flexV_ = root.value("flexv").toDouble(1.0);
-
-        descriptor.vertical_ = root.value("type").toString() == "vertical";
-
-        for (QJsonValue _val : root.value("items").toArray())
+        auto _type = _obj.value("type");
+        if (_type == "split")
         {
-            auto _obj = _val.toObject();
-
-            auto _type = _obj.value("type");
-            if (_type == "split")
-            {
-                descriptor.items_.emplace_back(
-                    loadNodes<SplitNodeDescriptor>(_obj));
-            }
-            else
-            {
-                descriptor.items_.emplace_back(
-                    loadNodes<ContainerNodeDescriptor>(_obj));
-            }
+            descriptor.items_.emplace_back(
+                loadNodes<SplitNodeDescriptor>(_obj));
         }
-
-        return descriptor;
-    }
-
-    const QList<QUuid> loadFilters(QJsonValue val)
-    {
-        QList<QUuid> filterIds;
-
-        if (!val.isUndefined())
+        else
         {
-            const auto array = val.toArray();
-            filterIds.reserve(array.size());
-            for (const auto &id : array)
-            {
-                filterIds.append(QUuid::fromString(id.toString()));
-            }
+            descriptor.items_.emplace_back(
+                loadNodes<ContainerNodeDescriptor>(_obj));
         }
-
-        return filterIds;
     }
+
+    return descriptor;
+}
+
+const QList<QUuid> loadFilters(QJsonValue val)
+{
+    QList<QUuid> filterIds;
+
+    if (!val.isUndefined())
+    {
+        const auto array = val.toArray();
+        filterIds.reserve(array.size());
+        for (const auto &id : array)
+        {
+            filterIds.append(QUuid::fromString(id.toString()));
+        }
+    }
+
+    return filterIds;
+}
 
 }  // namespace
 
@@ -219,14 +219,124 @@ WindowLayout WindowLayout::loadFromFile(const QString &path)
         }
 
         // Load emote popup position
-        QJsonObject emote_popup_obj = windowObj.value("emotePopup").toObject();
-        layout.emotePopupPos_ = QPoint(emote_popup_obj.value("x").toInt(),
-                                       emote_popup_obj.value("y").toInt());
+        {
+            auto emotePopup = windowObj["emotePopup"].toObject();
+            layout.emotePopupBounds_ = QRect{
+                emotePopup["x"].toInt(),
+                emotePopup["y"].toInt(),
+                emotePopup["width"].toInt(),
+                emotePopup["height"].toInt(),
+            };
+        }
 
         layout.windows_.emplace_back(std::move(window));
     }
 
     return layout;
+}
+
+void WindowLayout::activateOrAddChannel(ProviderId provider,
+                                        const QString &name)
+{
+    if (provider != ProviderId::Twitch || name.startsWith(u'/') ||
+        name.startsWith(u'$'))
+    {
+        qCWarning(chatterinoWindowmanager)
+            << "Only twitch channels can be set as active";
+        return;
+    }
+
+    auto mainWindow = std::find_if(this->windows_.begin(), this->windows_.end(),
+                                   [](const auto &win) {
+                                       return win.type_ == WindowType::Main;
+                                   });
+
+    if (mainWindow == this->windows_.end())
+    {
+        this->windows_.emplace_back(WindowDescriptor{
+            .type_ = WindowType::Main,
+            .geometry_ = {-1, -1, -1, -1},
+            .tabs_ =
+                {
+                    TabDescriptor{
+                        .selected_ = true,
+                        .rootNode_ = SplitNodeDescriptor{{
+                            .type_ = "twitch",
+                            .channelName_ = name,
+                        }},
+                    },
+                },
+        });
+        return;
+    }
+
+    TabDescriptor *bestTab = nullptr;
+    // The tab score is calculated as follows:
+    // +2 for every split
+    // +1 if the desired split has filters
+    // Thus lower is better and having one split of a channel is preferred over multiple
+    size_t bestTabScore = std::numeric_limits<size_t>::max();
+
+    for (auto &tab : mainWindow->tabs_)
+    {
+        tab.selected_ = false;
+
+        if (!tab.rootNode_)
+        {
+            continue;
+        }
+
+        // recursive visitor
+        struct Visitor {
+            const QString &spec;
+            size_t score = 0;
+            bool hasChannel = false;
+
+            void operator()(const SplitNodeDescriptor &split)
+            {
+                this->score += 2;
+                if (split.channelName_ == this->spec)
+                {
+                    hasChannel = true;
+                    if (!split.filters_.empty())
+                    {
+                        this->score += 1;
+                    }
+                }
+            }
+
+            void operator()(const ContainerNodeDescriptor &container)
+            {
+                for (const auto &item : container.items_)
+                {
+                    std::visit(*this, item);
+                }
+            }
+        } visitor{name};
+
+        std::visit(visitor, *tab.rootNode_);
+
+        if (visitor.hasChannel && visitor.score < bestTabScore)
+        {
+            bestTab = &tab;
+            bestTabScore = visitor.score;
+        }
+    }
+
+    if (bestTab)
+    {
+        bestTab->selected_ = true;
+        return;
+    }
+
+    TabDescriptor tab{
+        .selected_ = true,
+        .rootNode_ = SplitNodeDescriptor{{
+            .type_ = "twitch",
+            .channelName_ = name,
+        }},
+    };
+    mainWindow->tabs_.emplace_back(tab);
 }
 
 }  // namespace chatterino

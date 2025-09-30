@@ -1,29 +1,38 @@
 #include "common/ChannelChatters.hpp"
 
-#include "common/Channel.hpp"
+#include "mocks/BaseApplication.hpp"
+#include "mocks/Channel.hpp"
+#include "mocks/Logging.hpp"
+#include "Test.hpp"
 
-#include <gtest/gtest.h>
 #include <QColor>
 #include <QStringList>
 
-namespace chatterino {
+using namespace chatterino;
+using chatterino::mock::MockChannel;
 
-class MockChannel : public Channel
+namespace {
+
+class MockApplication : public mock::BaseApplication
 {
 public:
-    MockChannel(const QString &name)
-        : Channel(name, Channel::Type::Twitch)
+    MockApplication() = default;
+
+    ILogging *getChatLogger() override
     {
+        return &this->logging;
     }
+
+    mock::EmptyLogging logging;
 };
 
-}  // namespace chatterino
-
-using namespace chatterino;
+}  // namespace
 
 // Ensure inserting the same user does not increase the size of the stored colors
-TEST(ChatterChatters, insertSameUser)
+TEST(ChannelChatters, insertSameUser)
 {
+    MockApplication app;
+
     MockChannel channel("test");
 
     ChannelChatters chatters(channel);
@@ -36,8 +45,10 @@ TEST(ChatterChatters, insertSameUser)
 }
 
 // Ensure we can update a chatters color
-TEST(ChatterChatters, insertSameUserUpdatesColor)
+TEST(ChannelChatters, insertSameUserUpdatesColor)
 {
+    MockApplication app;
+
     MockChannel channel("test");
 
     ChannelChatters chatters(channel);
@@ -49,8 +60,10 @@ TEST(ChatterChatters, insertSameUserUpdatesColor)
 }
 
 // Ensure getting a non-existant users color returns an invalid QColor
-TEST(ChatterChatters, getNonExistantUser)
+TEST(ChannelChatters, getNonExistantUser)
 {
+    MockApplication app;
+
     MockChannel channel("test");
 
     ChannelChatters chatters(channel);
@@ -59,8 +72,10 @@ TEST(ChatterChatters, getNonExistantUser)
 }
 
 // Ensure getting a user doesn't create an entry
-TEST(ChatterChatters, getDoesNotCreate)
+TEST(ChannelChatters, getDoesNotCreate)
 {
+    MockApplication app;
+
     MockChannel channel("test");
 
     ChannelChatters chatters(channel);
@@ -71,8 +86,10 @@ TEST(ChatterChatters, getDoesNotCreate)
 }
 
 // Ensure the least recently used entry is purged when we reach MAX_SIZE
-TEST(ChatterChatters, insertMaxSize)
+TEST(ChannelChatters, insertMaxSize)
 {
+    MockApplication app;
+
     MockChannel channel("test");
 
     ChannelChatters chatters(channel);

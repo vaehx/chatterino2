@@ -25,7 +25,7 @@ public:
 
     std::shared_ptr<Hotkey> data();
 
-protected slots:
+protected Q_SLOTS:
     /**
      * @brief validates the hotkey
      *
@@ -49,6 +49,7 @@ protected slots:
 
 private:
     void showEditError(QString errorText);
+    void setFromHotkey(std::shared_ptr<Hotkey> hotkey);
 
     Ui::EditHotkeyDialog *ui_;
     std::shared_ptr<Hotkey> data_;

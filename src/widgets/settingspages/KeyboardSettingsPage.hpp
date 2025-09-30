@@ -11,10 +11,10 @@ class KeyboardSettingsPage : public SettingsPage
 {
 public:
     KeyboardSettingsPage();
+    bool filterElements(const QString &query) override;
 
 private:
-    void tableCellClicked(const QModelIndex &clicked, EditableModelView *view,
-                          HotkeyModel *model);
+    EditableModelView *view_;
 };
 
 }  // namespace chatterino

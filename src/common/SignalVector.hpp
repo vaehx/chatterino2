@@ -2,7 +2,6 @@
 
 #include "debug/AssertInGuiThread.hpp"
 
-#include <boost/noncopyable.hpp>
 #include <pajlada/signals/signal.hpp>
 #include <QStandardItemModel>
 #include <QTimer>
@@ -19,7 +18,7 @@ struct SignalVectorItemEvent {
 };
 
 template <typename T>
-class SignalVector : boost::noncopyable
+class SignalVector
 {
 public:
     pajlada::Signals::Signal<SignalVectorItemEvent<T>> itemInserted;
@@ -41,6 +40,12 @@ public:
     {
         this->itemCompare_ = std::move(compare);
     }
+
+    SignalVector(const SignalVector &) = delete;
+    SignalVector &operator=(const SignalVector &) = delete;
+
+    SignalVector(SignalVector &&) = delete;
+    SignalVector &operator=(SignalVector &&) = delete;
 
     bool isSorted() const
     {
@@ -82,7 +87,8 @@ public:
             }
             else
             {
-                assert(index >= 0 && index <= this->items_.size());
+                assert(index >= 0 &&
+                       index <= static_cast<int>(this->items_.size()));
             }
 
             this->items_.insert(this->items_.begin() + index, item);
@@ -111,7 +117,7 @@ public:
     void removeAt(int index, void *caller = nullptr)
     {
         assertInGuiThread();
-        assert(index >= 0 && index < int(this->items_.size()));
+        assert(index >= 0 && index < static_cast<int>(this->items_.size()));
 
         T item = this->items_[index];
         this->items_.erase(this->items_.begin() + index);
@@ -120,6 +126,28 @@ public:
         this->itemRemoved.invoke(args);
 
         this->itemsChanged_();
+    }
+
+    bool removeFirstMatching(std::function<bool(const T &)> matcher,
+                             void *caller = nullptr)
+    {
+        assertInGuiThread();
+
+        for (size_t index = 0; index < this->items_.size(); ++index)
+        {
+            T item = this->items_[index];
+            if (matcher(item))
+            {
+                this->items_.erase(this->items_.begin() + index);
+                SignalVectorItemEvent<T> args{item, static_cast<int>(index),
+                                              caller};
+                this->itemRemoved.invoke(args);
+                this->itemsChanged_();
+                return true;
+            }
+        }
+
+        return false;
     }
 
     const std::vector<T> &raw() const
@@ -150,7 +178,7 @@ public:
     decltype(auto) operator[](size_t index)
     {
         assertInGuiThread();
-        return this->items[index];
+        return this->items_[index];
     }
 
     auto empty()

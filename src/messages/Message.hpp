@@ -1,9 +1,9 @@
 #pragma once
 
-#include "common/FlagsEnum.hpp"
+#include "messages/MessageFlag.hpp"
+#include "providers/twitch/ChannelPointReward.hpp"
 #include "util/QStringHash.hpp"
 
-#include <boost/noncopyable.hpp>
 #include <QColor>
 #include <QTime>
 
@@ -12,51 +12,26 @@
 #include <unordered_map>
 #include <vector>
 
+class QJsonObject;
+
 namespace chatterino {
 class MessageElement;
 class MessageThread;
 class Badge;
 class ScrollbarHighlight;
 
-enum class MessageFlag : int64_t {
-    None = 0LL,
-    System = (1LL << 0),
-    Timeout = (1LL << 1),
-    Highlighted = (1LL << 2),
-    DoNotTriggerNotification = (1LL << 3),  // disable notification sound
-    Centered = (1LL << 4),
-    Disabled = (1LL << 5),
-    DisableCompactEmotes = (1LL << 6),
-    Collapsed = (1LL << 7),
-    ConnectedMessage = (1LL << 8),
-    DisconnectedMessage = (1LL << 9),
-    Untimeout = (1LL << 10),
-    PubSub = (1LL << 11),
-    Subscription = (1LL << 12),
-    DoNotLog = (1LL << 13),
-    AutoMod = (1LL << 14),
-    RecentMessage = (1LL << 15),
-    Whisper = (1LL << 16),
-    HighlightedWhisper = (1LL << 17),
-    Debug = (1LL << 18),
-    Similar = (1LL << 19),
-    RedeemedHighlight = (1LL << 20),
-    RedeemedChannelPointReward = (1LL << 21),
-    ShowInMentions = (1LL << 22),
-    FirstMessage = (1LL << 23),
-    ReplyMessage = (1LL << 24),
-    ElevatedMessage = (1LL << 25),
-    ParticipatedThread = (1LL << 26),
-    CheerMessage = (1LL << 27),
-    LiveUpdatesAdd = (1LL << 28),
-    LiveUpdatesRemove = (1LL << 29),
-    LiveUpdatesUpdate = (1LL << 30),
-};
-using MessageFlags = FlagsEnum<MessageFlag>;
-
-struct Message : boost::noncopyable {
+struct Message;
+using MessagePtr = std::shared_ptr<const Message>;
+using MessagePtrMut = std::shared_ptr<Message>;
+struct Message {
     Message();
     ~Message();
+
+    Message(const Message &) = delete;
+    Message &operator=(const Message &) = delete;
+
+    Message(Message &&) = delete;
+    Message &operator=(Message &&) = delete;
 
     // Making this a mutable means that we can update a messages flags,
     // while still keeping Message constant. This means that a message's flag
@@ -69,9 +44,12 @@ struct Message : boost::noncopyable {
     QString id;
     QString searchText;
     QString messageText;
+    // TODO: This field is used ambiguously, it could use a comment or a name change to
+    // clarify the intent of the field
     QString loginName;
     QString displayName;
     QString localizedName;
+    QString userID;
     QString timeoutUser;
     QString channelName;
     QColor usernameColor;
@@ -83,12 +61,53 @@ struct Message : boost::noncopyable {
     // the reply thread will be cleaned up by the TwitchChannel.
     // The root of the thread does not have replyThread set.
     std::shared_ptr<MessageThread> replyThread;
+    MessagePtr replyParent;
+    enum class ReplyStatus : std::uint8_t {
+        /// message has no reply thread, and message is not replyable
+        ///
+        /// e.g. due to message being deleted or too old
+        NotReplyable,
+
+        /// message has no reply thread, but message is replyable
+        Replyable,
+
+        /// message is part of a reply thread. both message & thread are replyable
+        ReplyableWithThread,
+
+        /// message is part of a reply thread. thread is replyable, but message is not replyable
+        ///
+        /// e.g. due to message being deleted or too old
+        NotReplyableWithThread,
+
+        /// message is part of a reply thread. neither reply or message is replyable
+        ///
+        /// e.g. due to message at the top of the thread being deleted
+        NotReplyableDueToThread,
+    };
+    ReplyStatus isReplyable() const;
     uint32_t count = 1;
+
+    /// Can this message be modified?
+    ///
+    /// Our rendering and layout code expects messages to be mostly immutable.
+    /// Thus, when this flag is set, this message may not be modified.
+    /// Only flags and this member can be modified safely (from the GUI thread).
+    /// This is only used for plugins right now. This value is only ever set to
+    /// true.
+    mutable bool frozen = false;
+
     std::vector<std::unique_ptr<MessageElement>> elements;
 
     ScrollbarHighlight getScrollBarHighlight() const;
-};
 
-using MessagePtr = std::shared_ptr<const Message>;
+    std::shared_ptr<ChannelPointReward> reward = nullptr;
+
+    QJsonObject toJson() const;
+
+    void freeze() const
+    {
+        this->frozen = true;
+    }
+};
 
 }  // namespace chatterino

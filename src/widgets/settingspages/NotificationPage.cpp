@@ -1,4 +1,4 @@
-#include "NotificationPage.hpp"
+#include "widgets/settingspages/NotificationPage.hpp"
 
 #include "Application.hpp"
 #include "controllers/notifications/NotificationController.hpp"
@@ -42,9 +42,24 @@ NotificationPage::NotificationPage()
                 settings.append(this->createCheckBox(
                     "Play sound for any channel going live",
                     getSettings()->notificationOnAnyChannel));
-#ifdef Q_OS_WIN
+
+                settings.append(this->createCheckBox(
+                    "Suppress live notifications on startup",
+                    getSettings()->suppressInitialLiveNotification));
+#if defined(Q_OS_WIN) || defined(CHATTERINO_WITH_LIBNOTIFY)
                 settings.append(this->createCheckBox(
                     "Show notification", getSettings()->notificationToast));
+#endif
+#ifdef Q_OS_WIN
+                settings.append(this->createCheckBox(
+                    "Create start menu shortcut (requires "
+                    "restart)",
+                    getSettings()->createShortcutForToasts,
+                    "When enabled, a shortcut will be created inside your "
+                    "start menu folder if needed by live notifications."
+                    "\n(On portable mode, this is disabled by "
+                    "default)"));
+
                 auto openIn = settings.emplace<QHBoxLayout>().withoutMargin();
                 {
                     openIn
@@ -93,7 +108,7 @@ NotificationPage::NotificationPage()
                 EditableModelView *view =
                     twitchChannels
                         .emplace<EditableModelView>(
-                            getApp()->notifications->createModel(
+                            getApp()->getNotifications()->createModel(
                                 nullptr, Platform::Twitch))
                         .getElement();
                 view->setTitles({"Twitch channels"});
@@ -109,10 +124,10 @@ NotificationPage::NotificationPage()
                     view->getTableView()->setColumnWidth(0, 200);
                 });
 
-                view->addButtonPressed.connect([] {
-                    getApp()
-                        ->notifications->channelMap[Platform::Twitch]
-                        .append("channel");
+                // We can safely ignore this signal connection since we own the view
+                std::ignore = view->addButtonPressed.connect([] {
+                    getApp()->getNotifications()->addChannelNotification(
+                        "channel", Platform::Twitch);
                 });
             }
         }
@@ -122,7 +137,8 @@ QComboBox *NotificationPage::createToastReactionComboBox()
 {
     QComboBox *toastReactionOptions = new QComboBox();
 
-    for (int i = 0; i <= static_cast<int>(ToastReaction::DontOpen); i++)
+    for (int i = 0; i <= static_cast<int>(ToastReaction::OpenInCustomPlayer);
+         i++)
     {
         toastReactionOptions->insertItem(
             i, Toasts::findStringFromReaction(static_cast<ToastReaction>(i)));

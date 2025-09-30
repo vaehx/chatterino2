@@ -19,10 +19,11 @@
 	url = https://github.com/Tencent/rapidjson
 [submodule "lib/qtkeychain"]
 	path = lib/qtkeychain
-	url = https://github.com/Chatterino/qtkeychain
+	url = https://github.com/frankosterfeld/qtkeychain
 [submodule "lib/websocketpp"]
 	path = lib/websocketpp
-	url = https://github.com/zaphoyd/websocketpp
+	url = https://github.com/Chatterino/websocketpp
+	branch = chatterino
 [submodule "cmake/sanitizers-cmake"]
 	path = cmake/sanitizers-cmake
 	url = https://github.com/arsenm/sanitizers-cmake
@@ -35,6 +36,25 @@
 [submodule "lib/miniaudio"]
 	path = lib/miniaudio
 	url = https://github.com/mackron/miniaudio.git
-[submodule "lib/crashpad"]
-	path = lib/crashpad
-	url = https://github.com/getsentry/crashpad
+[submodule "lib/lua/src"]
+	path = lib/lua/src
+	url = https://github.com/lua/lua
+	branch = v5.4
+[submodule "tools/crash-handler"]
+	path = tools/crash-handler
+	url = https://github.com/Chatterino/crash-handler
+[submodule "lib/expected-lite"]
+	path = lib/expected-lite
+	url = https://github.com/martinmoene/expected-lite
+[submodule "lib/sol2"]
+	path = lib/sol2
+	url = https://github.com/ThePhD/sol2.git
+[submodule "lib/certify"]
+	path = lib/certify
+	url = https://github.com/Chatterino/certify
+[submodule "lib/twitch-eventsub-ws/lib/date"]
+	path = lib/twitch-eventsub-ws/lib/date
+	url = https://github.com/HowardHinnant/date.git
+[submodule "lib/twitch-eventsub-ws/lib/fmt"]
+	path = lib/twitch-eventsub-ws/lib/fmt
+	url = https://github.com/fmtlib/fmt

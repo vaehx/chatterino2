@@ -1,7 +1,7 @@
 #include "providers/liveupdates/BasicPubSubClient.hpp"
 #include "providers/liveupdates/BasicPubSubManager.hpp"
+#include "Test.hpp"
 
-#include <gtest/gtest.h>
 #include <QByteArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -68,7 +68,7 @@ class MyManager : public BasicPubSubManager<DummySubscription>
 {
 public:
     MyManager(QString host)
-        : BasicPubSubManager(std::move(host))
+        : BasicPubSubManager(std::move(host), "Test")
     {
     }
 
@@ -116,33 +116,33 @@ private:
 TEST(BasicPubSub, SubscriptionCycle)
 {
     const QString host("wss://127.0.0.1:9050/liveupdates/sub-unsub");
-    auto *manager = new MyManager(host);
-    manager->start();
+    MyManager manager(host);
+    manager.start();
 
     std::this_thread::sleep_for(50ms);
-    manager->sub({1, "foo"});
+    manager.sub({1, "foo"});
     std::this_thread::sleep_for(500ms);
 
-    ASSERT_EQ(manager->diag.connectionsOpened, 1);
-    ASSERT_EQ(manager->diag.connectionsClosed, 0);
-    ASSERT_EQ(manager->diag.connectionsFailed, 0);
-    ASSERT_EQ(manager->messagesReceived, 1);
+    ASSERT_EQ(manager.diag.connectionsOpened, 1);
+    ASSERT_EQ(manager.diag.connectionsClosed, 0);
+    ASSERT_EQ(manager.diag.connectionsFailed, 0);
+    ASSERT_EQ(manager.messagesReceived, 1);
 
-    ASSERT_EQ(manager->popMessage(), QString("ack-sub-1-foo"));
+    ASSERT_EQ(manager.popMessage(), QString("ack-sub-1-foo"));
 
-    manager->unsub({1, "foo"});
+    manager.unsub({1, "foo"});
     std::this_thread::sleep_for(50ms);
 
-    ASSERT_EQ(manager->diag.connectionsOpened, 1);
-    ASSERT_EQ(manager->diag.connectionsClosed, 0);
-    ASSERT_EQ(manager->diag.connectionsFailed, 0);
-    ASSERT_EQ(manager->messagesReceived, 2);
-    ASSERT_EQ(manager->popMessage(), QString("ack-unsub-1-foo"));
+    ASSERT_EQ(manager.diag.connectionsOpened, 1);
+    ASSERT_EQ(manager.diag.connectionsClosed, 0);
+    ASSERT_EQ(manager.diag.connectionsFailed, 0);
+    ASSERT_EQ(manager.messagesReceived, 2);
+    ASSERT_EQ(manager.popMessage(), QString("ack-unsub-1-foo"));
 
-    manager->stop();
+    manager.stop();
 
-    ASSERT_EQ(manager->diag.connectionsOpened, 1);
-    ASSERT_EQ(manager->diag.connectionsClosed, 1);
-    ASSERT_EQ(manager->diag.connectionsFailed, 0);
-    ASSERT_EQ(manager->messagesReceived, 2);
+    ASSERT_EQ(manager.diag.connectionsOpened, 1);
+    ASSERT_EQ(manager.diag.connectionsClosed, 1);
+    ASSERT_EQ(manager.diag.connectionsFailed, 0);
+    ASSERT_EQ(manager.messagesReceived, 2);
 }

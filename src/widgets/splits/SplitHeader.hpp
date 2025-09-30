@@ -1,6 +1,7 @@
 #pragma once
 
 #include "widgets/BaseWidget.hpp"
+#include "widgets/TooltipWidget.hpp"
 
 #include <boost/signals2.hpp>
 #include <pajlada/settings/setting.hpp>
@@ -15,8 +16,9 @@
 
 namespace chatterino {
 
-class Button;
-class EffectLabel;
+class SvgButton;
+class DrawnButton;
+class LabelButton;
 class Label;
 class Split;
 
@@ -28,10 +30,11 @@ public:
     explicit SplitHeader(Split *split);
 
     void setAddButtonVisible(bool value);
-    void setViewersButtonVisible(bool value);
 
     void updateChannelText();
-    void updateModerationModeIcon();
+    void updateIcons();
+    // Invoked when SplitHeader should update anything refering to a TwitchChannel's mode
+    // has changed (e.g. sub mode toggled)
     void updateRoomModes();
 
 protected:
@@ -52,7 +55,6 @@ protected:
 
 private:
     void initializeLayout();
-    void initializeModeSignals(EffectLabel &label);
     std::unique_ptr<QMenu> createMainMenu();
     std::unique_ptr<QMenu> createChatModeMenu();
 
@@ -66,6 +68,7 @@ private:
 
     Split *const split_{};
     QString tooltipText_{};
+    TooltipWidget *const tooltipWidget_{};
     bool isLive_{false};
     QString thumbnail_;
     QElapsedTimer lastThumbnail_;
@@ -73,12 +76,19 @@ private:
     std::chrono::steady_clock::time_point lastReloadedSubEmotes_;
 
     // ui
-    Button *dropdownButton_{};
+    DrawnButton *dropdownButton_{};
     Label *titleLabel_{};
-    EffectLabel *modeButton_{};
-    Button *moderationButton_{};
-    Button *viewersButton_{};
-    Button *addButton_{};
+
+    LabelButton *modeButton_{};
+    QAction *modeActionSetEmote{};
+    QAction *modeActionSetSub{};
+    QAction *modeActionSetSlow{};
+    QAction *modeActionSetR9k{};
+    QAction *modeActionSetFollowers{};
+
+    SvgButton *moderationButton_{};
+    SvgButton *chattersButton_{};
+    DrawnButton *addButton_{};
 
     // states
     QPoint dragStart_{};
@@ -86,13 +96,13 @@ private:
     bool doubleClicked_{false};
     bool menuVisible_{false};
 
-    // signals
-    pajlada::Signals::NoArgSignal modeUpdateRequested_;
+    // managedConnections_ contains connections for signals that are not managed by us
+    // and don't change when the parent Split changes its underlying channel
     pajlada::Signals::SignalHolder managedConnections_;
     pajlada::Signals::SignalHolder channelConnections_;
     std::vector<boost::signals2::scoped_connection> bSignals_;
 
-public slots:
+public Q_SLOTS:
     void reloadChannelEmotes();
     void reloadSubscriberEmotes();
     void reconnect();

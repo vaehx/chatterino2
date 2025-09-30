@@ -3,12 +3,13 @@
 #include "common/Aliases.hpp"
 #include "messages/ImageSet.hpp"
 
-#include <boost/optional.hpp>
-
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <unordered_map>
+
+class QJsonObject;
 
 namespace chatterino {
 
@@ -17,20 +18,22 @@ struct Emote {
     ImageSet images;
     Tooltip tooltip;
     Url homePage;
-    bool zeroWidth;
+    bool zeroWidth{};
     EmoteId id;
     EmoteAuthor author;
     /**
      * If this emote is aliased, this contains
      * the original (base) name of the emote.
      */
-    boost::optional<EmoteName> baseName;
+    std::optional<EmoteName> baseName;
 
     // FOURTF: no solution yet, to be refactored later
     const QString &getCopyString() const
     {
         return name.string;
     }
+
+    QJsonObject toJson() const;
 };
 
 bool operator==(const Emote &a, const Emote &b);
@@ -56,7 +59,7 @@ public:
                                        const QString &emoteID) const;
 };
 
-static const std::shared_ptr<const EmoteMap> EMPTY_EMOTE_MAP = std::make_shared<
+inline const std::shared_ptr<const EmoteMap> EMPTY_EMOTE_MAP = std::make_shared<
     const EmoteMap>();  // NOLINT(cert-err58-cpp) -- assume this doesn't throw an exception
 
 EmotePtr cachedOrMakeEmotePtr(Emote &&emote, const EmoteMap &cache);

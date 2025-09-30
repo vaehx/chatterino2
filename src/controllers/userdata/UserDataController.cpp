@@ -2,18 +2,18 @@
 
 #include "singletons/Paths.hpp"
 #include "util/CombinePath.hpp"
+#include "util/Helpers.hpp"
 
 namespace {
 
 using namespace chatterino;
 
-std::shared_ptr<pajlada::Settings::SettingManager> initSettingsInstance()
+std::shared_ptr<pajlada::Settings::SettingManager> initSettingsInstance(
+    const Paths &paths)
 {
     auto sm = std::make_shared<pajlada::Settings::SettingManager>();
 
-    auto *paths = getPaths();
-
-    auto path = combinePath(paths->settingsDirectory, "user-data.json");
+    auto path = combinePath(paths.settingsDirectory, "user-data.json");
 
     sm->setPath(path.toUtf8().toStdString());
 
@@ -29,28 +29,27 @@ std::shared_ptr<pajlada::Settings::SettingManager> initSettingsInstance()
 
 namespace chatterino {
 
-UserDataController::UserDataController()
-    : sm(initSettingsInstance())
+UserDataController::UserDataController(const Paths &paths)
+    : sm(initSettingsInstance(paths))
     , setting("/users", this->sm)
 {
     this->sm->load();
     this->users = this->setting.getValue();
 }
 
-void UserDataController::save()
+std::optional<UserData> UserDataController::getUser(const QString &userID) const
 {
-    this->sm->save();
-}
+    if (userID.isEmpty())
+    {
+        return std::nullopt;
+    }
 
-boost::optional<UserData> UserDataController::getUser(
-    const QString &userID) const
-{
     std::shared_lock lock(this->usersMutex);
     auto it = this->users.find(userID);
 
     if (it == this->users.end())
     {
-        return boost::none;
+        return std::nullopt;
     }
 
     return it->second;
@@ -65,10 +64,17 @@ std::unordered_map<QString, UserData> UserDataController::getUsers() const
 void UserDataController::setUserColor(const QString &userID,
                                       const QString &colorString)
 {
-    auto c = this->getUsers();
+    if (userID.isEmpty())
+    {
+        return;
+    }
+
+    std::unique_lock lock(this->usersMutex);
+
+    auto c = this->users;
     auto it = c.find(userID);
-    boost::optional<QColor> finalColor =
-        boost::make_optional(!colorString.isEmpty(), QColor(colorString));
+    std::optional<QColor> finalColor =
+        makeConditionedOptional(!colorString.isEmpty(), QColor(colorString));
     if (it == c.end())
     {
         if (!finalColor)
@@ -86,15 +92,46 @@ void UserDataController::setUserColor(const QString &userID,
         it->second.color = finalColor;
     }
 
-    this->update(std::move(c));
+    this->update(std::move(c), std::move(lock));
 }
 
 void UserDataController::update(
-    std::unordered_map<QString, UserData> &&newUsers)
+    std::unordered_map<QString, UserData> &&newUsers,
+    std::unique_lock<std::shared_mutex> usersLock)
 {
-    std::unique_lock lock(this->usersMutex);
+    // Remove empty user data items
+    std::erase_if(newUsers, [](const auto &pair) {
+        return pair.second.isEmpty();
+    });
+
     this->users = std::move(newUsers);
     this->setting.setValue(this->users);
+
+    // unlock before invoking updated signal
+    usersLock.unlock();
+
+    this->userDataUpdated_.invoke();
+}
+
+void UserDataController::setUserNotes(const QString &userID,
+                                      const QString &notes)
+{
+    if (userID.isEmpty())
+    {
+        return;
+    }
+
+    std::unique_lock lock(this->usersMutex);
+
+    auto users = this->users;
+    users[userID].notes = notes;
+
+    this->update(std::move(users), std::move(lock));
+}
+
+pajlada::Signals::NoArgSignal &UserDataController::userDataUpdated()
+{
+    return this->userDataUpdated_;
 }
 
 }  // namespace chatterino

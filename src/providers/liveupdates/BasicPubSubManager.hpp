@@ -8,10 +8,14 @@
 #include "providers/twitch/PubSubHelpers.hpp"
 #include "util/DebugCount.hpp"
 #include "util/ExponentialBackoff.hpp"
+#include "util/OnceFlag.hpp"
+#include "util/RenameThread.hpp"
 
 #include <pajlada/signals/signal.hpp>
 #include <QJsonObject>
+#include <QScopeGuard>
 #include <QString>
+#include <QStringBuilder>
 #include <websocketpp/client.hpp>
 
 #include <algorithm>
@@ -59,8 +63,9 @@ template <typename Subscription>
 class BasicPubSubManager
 {
 public:
-    BasicPubSubManager(QString host)
+    BasicPubSubManager(QString host, QString shortName)
         : host_(std::move(host))
+        , shortName_(std::move(shortName))
     {
         this->websocketClient_.set_access_channels(
             websocketpp::log::alevel::all);
@@ -87,11 +92,18 @@ public:
         this->websocketClient_.set_fail_handler([this](auto hdl) {
             this->onConnectionFail(hdl);
         });
-        this->websocketClient_.set_user_agent("Chatterino/" CHATTERINO_VERSION
-                                              " (" CHATTERINO_GIT_HASH ")");
+        this->websocketClient_.set_user_agent(
+            QStringLiteral("Chatterino/%1 (%2)")
+                .arg(Version::instance().version(),
+                     Version::instance().commitHash())
+                .toStdString());
     }
 
-    virtual ~BasicPubSubManager() = default;
+    virtual ~BasicPubSubManager()
+    {
+        // The derived class must call stop in its destructor
+        assert(this->stopping_);
+    }
 
     BasicPubSubManager(const BasicPubSubManager &) = delete;
     BasicPubSubManager(const BasicPubSubManager &&) = delete;
@@ -107,15 +119,28 @@ public:
 
     void start()
     {
-        this->work_ = std::make_shared<boost::asio::io_service::work>(
-            this->websocketClient_.get_io_service());
+        this->work_ = std::make_shared<boost::asio::executor_work_guard<
+            boost::asio::io_context::executor_type>>(
+            this->websocketClient_.get_io_service().get_executor());
         this->mainThread_.reset(new std::thread([this] {
+            // make sure we set in any case, even exceptions
+            auto guard = qScopeGuard([&] {
+                this->stoppedFlag_.set();
+            });
+
             runThread();
         }));
+
+        renameThread(*this->mainThread_.get(), "BPSM-" % this->shortName_);
     }
 
     void stop()
     {
+        if (this->stopping_)
+        {
+            return;
+        }
+
         this->stopping_ = true;
 
         for (const auto &client : this->clients_)
@@ -125,12 +150,32 @@ public:
 
         this->work_.reset();
 
-        if (this->mainThread_->joinable())
+        if (!this->mainThread_->joinable())
         {
-            this->mainThread_->join();
+            return;
         }
 
-        assert(this->clients_.empty());
+        // NOTE:
+        // There is a case where a new client was initiated but not added to the clients list.
+        // We just don't join the thread & let the operating system nuke the thread if joining fails
+        // within 1s.
+        if (this->stoppedFlag_.waitFor(std::chrono::milliseconds{100}))
+        {
+            this->mainThread_->join();
+            return;
+        }
+
+        qCWarning(chatterinoLiveupdates)
+            << "Thread didn't finish within 100ms, force-stop the client";
+        this->websocketClient_.stop();
+        if (this->stoppedFlag_.waitFor(std::chrono::milliseconds{20}))
+        {
+            this->mainThread_->join();
+            return;
+        }
+
+        qCWarning(chatterinoLiveupdates)
+            << "Thread didn't finish after stopping";
     }
 
 protected:
@@ -289,13 +334,14 @@ private:
 
     WebsocketContextPtr onTLSInit(const websocketpp::connection_hdl & /*hdl*/)
     {
-        WebsocketContextPtr ctx(
-            new boost::asio::ssl::context(boost::asio::ssl::context::tlsv12));
+        WebsocketContextPtr ctx(new boost::asio::ssl::context(
+            boost::asio::ssl::context::tls_client));
 
         try
         {
             ctx->set_options(boost::asio::ssl::context::default_workarounds |
-                             boost::asio::ssl::context::no_sslv2 |
+                             boost::asio::ssl::context::no_tlsv1 |
+                             boost::asio::ssl::context::no_tlsv1_1 |
                              boost::asio::ssl::context::single_dh_use);
         }
         catch (const std::exception &e)
@@ -354,21 +400,27 @@ private:
         return false;
     }
 
+    std::vector<Subscription> pendingSubscriptions_;
+    std::atomic<bool> addingClient_{false};
+    ExponentialBackoff<5> connectBackoff_{std::chrono::milliseconds(1000)};
+
+    liveupdates::WebsocketClient websocketClient_;
+    std::unique_ptr<std::thread> mainThread_;
+    OnceFlag stoppedFlag_;
+
     std::map<liveupdates::WebsocketHandle,
              std::shared_ptr<BasicPubSubClient<Subscription>>,
              std::owner_less<liveupdates::WebsocketHandle>>
         clients_;
 
-    std::vector<Subscription> pendingSubscriptions_;
-    std::atomic<bool> addingClient_{false};
-    ExponentialBackoff<5> connectBackoff_{std::chrono::milliseconds(1000)};
-
-    std::shared_ptr<boost::asio::io_service::work> work_{nullptr};
-
-    liveupdates::WebsocketClient websocketClient_;
-    std::unique_ptr<std::thread> mainThread_;
+    std::shared_ptr<boost::asio::executor_work_guard<
+        boost::asio::io_context::executor_type>>
+        work_{nullptr};
 
     const QString host_;
+
+    /// Short name of the service (e.g. "7TV" or "BTTV")
+    const QString shortName_;
 
     bool stopping_{false};
 };

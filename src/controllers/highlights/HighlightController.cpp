@@ -23,7 +23,7 @@ auto highlightPhraseCheck(const HighlightPhrase &highlight) -> HighlightCheck
         [highlight](const auto &args, const auto &badges,
                     const auto &senderName, const auto &originalMessage,
                     const auto &flags,
-                    const auto self) -> boost::optional<HighlightResult> {
+                    const auto self) -> std::optional<HighlightResult> {
             (void)args;        // unused
             (void)badges;      // unused
             (void)senderName;  // unused
@@ -32,15 +32,15 @@ auto highlightPhraseCheck(const HighlightPhrase &highlight) -> HighlightCheck
             if (self)
             {
                 // Phrase checks should ignore highlights from the user
-                return boost::none;
+                return std::nullopt;
             }
 
             if (!highlight.isMatch(originalMessage))
             {
-                return boost::none;
+                return std::nullopt;
             }
 
-            boost::optional<QUrl> highlightSoundUrl;
+            std::optional<QUrl> highlightSoundUrl;
             if (highlight.hasCustomSound())
             {
                 highlightSoundUrl = highlight.getSoundUrl();
@@ -62,7 +62,7 @@ void rebuildSubscriptionHighlights(Settings &settings,
         auto highlightSound = settings.enableSubHighlightSound.getValue();
         auto highlightAlert = settings.enableSubHighlightTaskbar.getValue();
         auto highlightSoundUrlValue = settings.subHighlightSoundUrl.getValue();
-        boost::optional<QUrl> highlightSoundUrl;
+        std::optional<QUrl> highlightSoundUrl;
         if (!highlightSoundUrlValue.isEmpty())
         {
             highlightSoundUrl = highlightSoundUrlValue;
@@ -73,7 +73,7 @@ void rebuildSubscriptionHighlights(Settings &settings,
         checks.emplace_back(HighlightCheck{
             [=](const auto &args, const auto &badges, const auto &senderName,
                 const auto &originalMessage, const auto &flags,
-                const auto self) -> boost::optional<HighlightResult> {
+                const auto self) -> std::optional<HighlightResult> {
                 (void)badges;           // unused
                 (void)senderName;       // unused
                 (void)originalMessage;  // unused
@@ -82,7 +82,7 @@ void rebuildSubscriptionHighlights(Settings &settings,
 
                 if (!args.isSubscriptionMessage)
                 {
-                    return boost::none;
+                    return std::nullopt;
                 }
 
                 auto highlightColor =
@@ -108,7 +108,7 @@ void rebuildWhisperHighlights(Settings &settings,
         auto highlightAlert = settings.enableWhisperHighlightTaskbar.getValue();
         auto highlightSoundUrlValue =
             settings.whisperHighlightSoundUrl.getValue();
-        boost::optional<QUrl> highlightSoundUrl;
+        std::optional<QUrl> highlightSoundUrl;
         if (!highlightSoundUrlValue.isEmpty())
         {
             highlightSoundUrl = highlightSoundUrlValue;
@@ -119,7 +119,7 @@ void rebuildWhisperHighlights(Settings &settings,
         checks.emplace_back(HighlightCheck{
             [=](const auto &args, const auto &badges, const auto &senderName,
                 const auto &originalMessage, const auto &flags,
-                const auto self) -> boost::optional<HighlightResult> {
+                const auto self) -> std::optional<HighlightResult> {
                 (void)badges;           // unused
                 (void)senderName;       // unused
                 (void)originalMessage;  // unused
@@ -128,7 +128,7 @@ void rebuildWhisperHighlights(Settings &settings,
 
                 if (!args.isReceivedWhisper)
                 {
-                    return boost::none;
+                    return std::nullopt;
                 }
 
                 return HighlightResult{
@@ -151,7 +151,7 @@ void rebuildReplyThreadHighlight(Settings &settings,
         auto highlightAlert = settings.enableThreadHighlightTaskbar.getValue();
         auto highlightSoundUrlValue =
             settings.threadHighlightSoundUrl.getValue();
-        boost::optional<QUrl> highlightSoundUrl;
+        std::optional<QUrl> highlightSoundUrl;
         if (!highlightSoundUrlValue.isEmpty())
         {
             highlightSoundUrl = highlightSoundUrlValue;
@@ -162,8 +162,8 @@ void rebuildReplyThreadHighlight(Settings &settings,
             [=](const auto & /*args*/, const auto & /*badges*/,
                 const auto & /*senderName*/, const auto & /*originalMessage*/,
                 const auto &flags,
-                const auto self) -> boost::optional<HighlightResult> {
-                if (flags.has(MessageFlag::ParticipatedThread) && !self)
+                const auto self) -> std::optional<HighlightResult> {
+                if (flags.has(MessageFlag::SubscribedThread) && !self)
                 {
                     return HighlightResult{
                         highlightAlert,
@@ -175,7 +175,7 @@ void rebuildReplyThreadHighlight(Settings &settings,
                     };
                 }
 
-                return boost::none;
+                return std::nullopt;
             }});
     }
 }
@@ -183,10 +183,11 @@ void rebuildReplyThreadHighlight(Settings &settings,
 void rebuildMessageHighlights(Settings &settings,
                               std::vector<HighlightCheck> &checks)
 {
-    auto currentUser = getIApp()->getAccounts()->twitch.getCurrent();
+    auto currentUser = getApp()->getAccounts()->twitch.getCurrent();
     QString currentUsername = currentUser->getUserName();
 
-    if (settings.enableSelfHighlight && !currentUsername.isEmpty())
+    if (settings.enableSelfHighlight && !currentUsername.isEmpty() &&
+        !currentUser->isAnon())
     {
         HighlightPhrase highlight(
             currentUsername, settings.showSelfHighlightInMentions,
@@ -203,6 +204,43 @@ void rebuildMessageHighlights(Settings &settings,
     {
         checks.emplace_back(highlightPhraseCheck(highlight));
     }
+
+    if (settings.enableAutomodHighlight)
+    {
+        const auto highlightSound =
+            settings.enableAutomodHighlightSound.getValue();
+        const auto highlightAlert =
+            settings.enableAutomodHighlightTaskbar.getValue();
+        const auto highlightSoundUrlValue =
+            settings.automodHighlightSoundUrl.getValue();
+        auto highlightColor =
+            ColorProvider::instance().color(ColorType::AutomodHighlight);
+
+        checks.emplace_back(HighlightCheck{
+            [=](const auto & /*args*/, const auto & /*badges*/,
+                const auto & /*senderName*/, const auto & /*originalMessage*/,
+                const auto &flags,
+                const auto /*self*/) -> std::optional<HighlightResult> {
+                if (!flags.has(MessageFlag::AutoModOffendingMessage))
+                {
+                    return std::nullopt;
+                }
+
+                std::optional<QUrl> highlightSoundUrl;
+                if (!highlightSoundUrlValue.isEmpty())
+                {
+                    highlightSoundUrl = highlightSoundUrlValue;
+                }
+
+                return HighlightResult{
+                    highlightAlert,     // alert
+                    highlightSound,     // playSound
+                    highlightSoundUrl,  // customSoundUrl
+                    highlightColor,     // color
+                    false,              // showInMentions
+                };
+            }});
+    }
 }
 
 void rebuildUserHighlights(Settings &settings,
@@ -218,7 +256,7 @@ void rebuildUserHighlights(Settings &settings,
             [showInMentions](
                 const auto &args, const auto &badges, const auto &senderName,
                 const auto &originalMessage, const auto &flags,
-                const auto self) -> boost::optional<HighlightResult> {
+                const auto self) -> std::optional<HighlightResult> {
                 (void)args;             //unused
                 (void)badges;           //unused
                 (void)senderName;       //unused
@@ -227,7 +265,7 @@ void rebuildUserHighlights(Settings &settings,
 
                 if (!self)
                 {
-                    return boost::none;
+                    return std::nullopt;
                 }
 
                 // Highlight color is provided by the ColorProvider and will be updated accordingly
@@ -245,7 +283,7 @@ void rebuildUserHighlights(Settings &settings,
             [highlight](const auto &args, const auto &badges,
                         const auto &senderName, const auto &originalMessage,
                         const auto &flags,
-                        const auto self) -> boost::optional<HighlightResult> {
+                        const auto self) -> std::optional<HighlightResult> {
                 (void)args;             // unused
                 (void)badges;           // unused
                 (void)originalMessage;  // unused
@@ -254,10 +292,10 @@ void rebuildUserHighlights(Settings &settings,
 
                 if (!highlight.isMatch(senderName))
                 {
-                    return boost::none;
+                    return std::nullopt;
                 }
 
-                boost::optional<QUrl> highlightSoundUrl;
+                std::optional<QUrl> highlightSoundUrl;
                 if (highlight.hasCustomSound())
                 {
                     highlightSoundUrl = highlight.getSoundUrl();
@@ -285,7 +323,7 @@ void rebuildBadgeHighlights(Settings &settings,
             [highlight](const auto &args, const auto &badges,
                         const auto &senderName, const auto &originalMessage,
                         const auto &flags,
-                        const auto self) -> boost::optional<HighlightResult> {
+                        const auto self) -> std::optional<HighlightResult> {
                 (void)args;             // unused
                 (void)senderName;       // unused
                 (void)originalMessage;  // unused
@@ -296,7 +334,7 @@ void rebuildBadgeHighlights(Settings &settings,
                 {
                     if (highlight.isMatch(badge))
                     {
-                        boost::optional<QUrl> highlightSoundUrl;
+                        std::optional<QUrl> highlightSoundUrl;
                         if (highlight.hasCustomSound())
                         {
                             highlightSoundUrl = highlight.getSoundUrl();
@@ -312,7 +350,7 @@ void rebuildBadgeHighlights(Settings &settings,
                     }
                 }
 
-                return boost::none;
+                return std::nullopt;
             }});
     }
 }
@@ -322,7 +360,7 @@ void rebuildBadgeHighlights(Settings &settings,
 namespace chatterino {
 
 HighlightResult::HighlightResult(bool _alert, bool _playSound,
-                                 boost::optional<QUrl> _customSoundUrl,
+                                 std::optional<QUrl> _customSoundUrl,
                                  std::shared_ptr<QColor> _color,
                                  bool _showInMentions)
     : alert(_alert)
@@ -336,7 +374,7 @@ HighlightResult::HighlightResult(bool _alert, bool _playSound,
 HighlightResult HighlightResult::emptyResult()
 {
     return {
-        false, false, boost::none, nullptr, false,
+        false, false, std::nullopt, nullptr, false,
     };
 }
 
@@ -394,7 +432,7 @@ std::ostream &operator<<(std::ostream &os, const HighlightResult &result)
     os << "Alert: " << (result.alert ? "Yes" : "No") << ", "
        << "Play sound: " << (result.playSound ? "Yes" : "No") << " ("
        << (result.customSoundUrl
-               ? result.customSoundUrl.get().toString().toStdString()
+               ? result.customSoundUrl->toString().toStdString()
                : "")
        << ")"
        << ", "
@@ -404,8 +442,11 @@ std::ostream &operator<<(std::ostream &os, const HighlightResult &result)
     return os;
 }
 
-void HighlightController::initialize(Settings &settings, Paths & /*paths*/)
+HighlightController::HighlightController(Settings &settings,
+                                         AccountController *accounts)
 {
+    assert(accounts != nullptr);
+
     this->rebuildListener_.addSetting(settings.enableSelfHighlight);
     this->rebuildListener_.addSetting(settings.enableSelfHighlightSound);
     this->rebuildListener_.addSetting(settings.enableSelfHighlightTaskbar);
@@ -433,6 +474,12 @@ void HighlightController::initialize(Settings &settings, Paths & /*paths*/)
     this->rebuildListener_.addSetting(settings.threadHighlightSoundUrl);
     this->rebuildListener_.addSetting(settings.showThreadHighlightInMentions);
 
+    this->rebuildListener_.addSetting(settings.enableAutomodHighlight);
+    this->rebuildListener_.addSetting(settings.showAutomodInMentions);
+    this->rebuildListener_.addSetting(settings.enableAutomodHighlightSound);
+    this->rebuildListener_.addSetting(settings.enableAutomodHighlightTaskbar);
+    this->rebuildListener_.addSetting(settings.automodHighlightSoundUrl);
+
     this->rebuildListener_.setCB([this, &settings] {
         qCDebug(chatterinoHighlights)
             << "Rebuild checks because a setting changed";
@@ -440,7 +487,7 @@ void HighlightController::initialize(Settings &settings, Paths & /*paths*/)
     });
 
     this->signalHolder_.managedConnect(
-        getCSettings().highlightedBadges.delayedItemsChanged,
+        getSettings()->highlightedBadges.delayedItemsChanged,
         [this, &settings] {
             qCDebug(chatterinoHighlights)
                 << "Rebuild checks because highlight badges changed";
@@ -448,26 +495,26 @@ void HighlightController::initialize(Settings &settings, Paths & /*paths*/)
         });
 
     this->signalHolder_.managedConnect(
-        getCSettings().highlightedUsers.delayedItemsChanged, [this, &settings] {
+        getSettings()->highlightedUsers.delayedItemsChanged, [this, &settings] {
             qCDebug(chatterinoHighlights)
                 << "Rebuild checks because highlight users changed";
             this->rebuildChecks(settings);
         });
 
     this->signalHolder_.managedConnect(
-        getCSettings().highlightedMessages.delayedItemsChanged,
+        getSettings()->highlightedMessages.delayedItemsChanged,
         [this, &settings] {
             qCDebug(chatterinoHighlights)
                 << "Rebuild checks because highlight messages changed";
             this->rebuildChecks(settings);
         });
 
-    getIApp()->getAccounts()->twitch.currentUserChanged.connect(
-        [this, &settings] {
+    this->bConnections.emplace_back(
+        accounts->twitch.currentUserChanged.connect([this, &settings] {
             qCDebug(chatterinoHighlights)
                 << "Rebuild checks because user swapped accounts";
             this->rebuildChecks(settings);
-        });
+        }));
 
     this->rebuildChecks(settings);
 }
@@ -505,7 +552,7 @@ std::pair<bool, HighlightResult> HighlightController::check(
     // Access for checking
     const auto checks = this->checks_.accessConst();
 
-    auto currentUser = getIApp()->getAccounts()->twitch.getCurrent();
+    auto currentUser = getApp()->getAccounts()->twitch.getCurrent();
     auto self = (senderName == currentUser->getUserName());
 
     for (const auto &check : *checks)

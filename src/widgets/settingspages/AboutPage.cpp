@@ -1,29 +1,29 @@
-#include "AboutPage.hpp"
+#include "widgets/settingspages/AboutPage.hpp"
 
-#include "common/Modes.hpp"
+#include "common/Common.hpp"
 #include "common/QLogging.hpp"
 #include "common/Version.hpp"
 #include "util/LayoutCreator.hpp"
 #include "util/RemoveScrollAreaBackground.hpp"
 #include "widgets/BasePopup.hpp"
-#include "widgets/helper/SignalLabel.hpp"
+#include "widgets/buttons/SignalLabel.hpp"
+#include "widgets/layout/FlowLayout.hpp"
 
 #include <QFile>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QLabel>
+#include <QStringBuilder>
 #include <QTextEdit>
 #include <QTextStream>
 #include <QVBoxLayout>
 
-#define PIXMAP_WIDTH 500
-
-#define LINK_CHATTERINO_WIKI "https://wiki.chatterino.com"
-#define LINK_DONATE "https://streamelements.com/fourtf/tip"
-#define LINK_CHATTERINO_FEATURES "https://chatterino.com/#features"
-#define LINK_CHATTERINO_DISCORD "https://discord.gg/7Y5AYhAK4z"
-
 namespace chatterino {
+
+constexpr int PIXMAP_WIDTH = 500;
+
+constexpr QStringView LINK_CHATTERINO_FEATURES =
+    u"https://chatterino.com/#features";
 
 AboutPage::AboutPage()
 {
@@ -55,6 +55,7 @@ AboutPage::AboutPage()
 
             auto label = vbox.emplace<QLabel>(version.buildString() + "<br>" +
                                               version.runningString());
+            label->setWordWrap(true);
             label->setOpenExternalLinks(true);
             label->setTextInteractionFlags(Qt::TextBrowserInteraction);
         }
@@ -65,9 +66,9 @@ AboutPage::AboutPage()
             auto l = aboutChatterino.emplace<QVBoxLayout>();
 
             // clang-format off
-            l.emplace<QLabel>("Chatterino Wiki can be found <a href=\"" LINK_CHATTERINO_WIKI "\">here</a>")->setOpenExternalLinks(true);
-            l.emplace<QLabel>("All about Chatterino's <a href=\"" LINK_CHATTERINO_FEATURES "\">features</a>")->setOpenExternalLinks(true);
-            l.emplace<QLabel>("Join the official Chatterino <a href=\"" LINK_CHATTERINO_DISCORD "\">Discord</a>")->setOpenExternalLinks(true);
+            l.emplace<QLabel>("Chatterino Wiki can be found <a href=\"" % LINK_CHATTERINO_WIKI % "\">here</a>")->setOpenExternalLinks(true);
+            l.emplace<QLabel>("All about Chatterino's <a href=\"" % LINK_CHATTERINO_FEATURES % "\">features</a>")->setOpenExternalLinks(true);
+            l.emplace<QLabel>("Join the official Chatterino <a href=\"" % LINK_CHATTERINO_DISCORD % "\">Discord</a>")->setOpenExternalLinks(true);
             // clang-format on
         }
 
@@ -114,11 +115,26 @@ AboutPage::AboutPage()
             addLicense(form.getElement(), "miniaudio",
                        "https://github.com/mackron/miniaudio",
                        ":/licenses/miniaudio.txt");
+#ifdef CHATTERINO_HAVE_PLUGINS
+            addLicense(form.getElement(), "lua", "https://lua.org",
+                       ":/licenses/lua.txt");
+#endif
 #ifdef CHATTERINO_WITH_CRASHPAD
             addLicense(form.getElement(), "sentry-crashpad",
                        "https://github.com/getsentry/crashpad",
                        ":/licenses/crashpad.txt");
 #endif
+            addLicense(form.getElement(), "Fluent icons",
+                       "https://github.com/microsoft/fluentui-system-icons",
+                       ":/licenses/fluenticons.txt");
+            addLicense(form.getElement(), "expected-lite",
+                       "https://github.com/martinmoene/expected-lite",
+                       ":/licenses/expected-lite.txt");
+            addLicense(form.getElement(), "Howard Hinnant's date.h",
+                       "https://github.com/HowardHinnant/date",
+                       ":/licenses/howard-hinnant-date.txt");
+            addLicense(form.getElement(), "{fmt}", "https://fmt.dev",
+                       ":/licenses/fmtlib.txt");
         }
 
         // Attributions
@@ -131,15 +147,15 @@ AboutPage::AboutPage()
             l.emplace<QLabel>("Facebook emojis provided by <a href=\"https://facebook.com\">Facebook</a>")->setOpenExternalLinks(true);
             l.emplace<QLabel>("Apple emojis provided by <a href=\"https://apple.com\">Apple</a>")->setOpenExternalLinks(true);
             l.emplace<QLabel>("Google emojis provided by <a href=\"https://google.com\">Google</a>")->setOpenExternalLinks(true);
-            l.emplace<QLabel>("Emoji datasource provided by <a href=\"https://www.iamcal.com/\">Cal Henderson</a>"
+            l.emplace<QLabel>("Emoji datasource provided by <a href=\"https://www.iamcal.com/\">Cal Henderson</a> "
                               "(<a href=\"https://github.com/iamcal/emoji-data/blob/master/LICENSE\">show license</a>)")->setOpenExternalLinks(true);
             // clang-format on
         }
 
         // Contributors
-        auto contributors = layout.emplace<QGroupBox>("Contributors");
+        auto contributors = layout.emplace<QGroupBox>("People");
         {
-            auto l = contributors.emplace<QVBoxLayout>();
+            auto l = contributors.emplace<FlowLayout>();
 
             QFile contributorsFile(":/contributors.txt");
             contributorsFile.open(QFile::ReadOnly);
@@ -160,11 +176,24 @@ AboutPage::AboutPage()
                     continue;
                 }
 
+                if (line.startsWith(u"@header"))
+                {
+                    if (l->count() != 0)
+                    {
+                        l->addLinebreak(20);
+                    }
+                    auto *label = new QLabel(QStringLiteral("<h1>%1</h1>")
+                                                 .arg(line.mid(8).trimmed()));
+                    l->addWidget(label);
+                    l->addLinebreak(8);
+                    continue;
+                }
+
                 QStringList contributorParts = line.split("|");
 
-                if (contributorParts.size() != 4)
+                if (contributorParts.size() != 3)
                 {
-                    qCDebug(chatterinoWidget)
+                    qCWarning(chatterinoWidget)
                         << "Missing parts in line" << line;
                     continue;
                 }
@@ -172,39 +201,42 @@ AboutPage::AboutPage()
                 QString username = contributorParts[0].trimmed();
                 QString url = contributorParts[1].trimmed();
                 QString avatarUrl = contributorParts[2].trimmed();
-                QString role = contributorParts[3].trimmed();
 
                 auto *usernameLabel =
                     new QLabel("<a href=\"" + url + "\">" + username + "</a>");
                 usernameLabel->setOpenExternalLinks(true);
-                auto *roleLabel = new QLabel(role);
+                usernameLabel->setToolTip(url);
 
-                auto contributorBox2 = l.emplace<QHBoxLayout>();
+                auto contributorBox2 = l.emplace<QVBoxLayout>();
 
-                const auto addAvatar = [&avatarUrl, &contributorBox2] {
-                    if (!avatarUrl.isEmpty())
+                const auto addAvatar = [&] {
+                    auto *avatar = new QLabel();
+                    QPixmap avatarPixmap;
+                    if (avatarUrl.isEmpty())
                     {
-                        QPixmap avatarPixmap;
-                        avatarPixmap.load(avatarUrl);
-
-                        auto avatar = contributorBox2.emplace<QLabel>();
-                        avatar->setPixmap(avatarPixmap);
-                        avatar->setFixedSize(64, 64);
-                        avatar->setScaledContents(true);
+                        // TODO: or anon.png
+                        avatarPixmap.load(":/avatars/anon.png");
                     }
+                    else
+                    {
+                        avatarPixmap.load(avatarUrl);
+                    }
+
+                    avatar->setPixmap(avatarPixmap);
+                    avatar->setFixedSize(64, 64);
+                    avatar->setScaledContents(true);
+                    contributorBox2->addWidget(avatar, 0, Qt::AlignCenter);
                 };
 
-                const auto addLabels = [&contributorBox2, &usernameLabel,
-                                        &roleLabel] {
-                    auto labelBox = new QVBoxLayout();
+                const auto addLabels = [&] {
+                    auto *labelBox = new QVBoxLayout();
                     contributorBox2->addLayout(labelBox);
 
-                    labelBox->addWidget(usernameLabel);
-                    labelBox->addWidget(roleLabel);
+                    labelBox->addWidget(usernameLabel, 0, Qt::AlignCenter);
                 };
 
-                addLabels();
                 addAvatar();
+                addLabels();
             }
         }
     }
@@ -220,12 +252,16 @@ void AboutPage::addLicense(QFormLayout *form, const QString &name,
     auto *b = new QLabel("<a href=\"" + licenseLink + "\">show license</a>");
     QObject::connect(
         b, &QLabel::linkActivated, [parent = this, name, licenseLink] {
-            auto window = new BasePopup({BaseWindow::Flags::EnableCustomFrame,
-                                         BaseWindow::DisableLayoutSave},
-                                        parent);
+            auto *window = new BasePopup(
+                {
+                    BaseWindow::EnableCustomFrame,
+                    BaseWindow::DisableLayoutSave,
+                    BaseWindow::BoundsCheckOnShow,
+                },
+                parent);
             window->setWindowTitle("Chatterino - License for " + name);
             window->setAttribute(Qt::WA_DeleteOnClose);
-            auto layout = new QVBoxLayout();
+            auto *layout = new QVBoxLayout();
             auto *edit = new QTextEdit;
 
             QFile file(licenseLink);

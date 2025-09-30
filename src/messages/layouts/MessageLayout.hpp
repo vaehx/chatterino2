@@ -2,8 +2,8 @@
 
 #include "common/Common.hpp"
 #include "common/FlagsEnum.hpp"
+#include "messages/layouts/MessageLayoutContainer.hpp"
 
-#include <boost/noncopyable.hpp>
 #include <QPixmap>
 
 #include <cinttypes>
@@ -17,6 +17,8 @@ using MessagePtr = std::shared_ptr<const Message>;
 struct Selection;
 struct MessageLayoutContainer;
 class MessageLayoutElement;
+struct MessagePaintContext;
+struct MessageLayoutContext;
 
 enum class MessageElementFlag : int64_t;
 using MessageElementFlags = FlagsEnum<MessageElementFlag>;
@@ -31,65 +33,110 @@ enum class MessageLayoutFlag : uint8_t {
 };
 using MessageLayoutFlags = FlagsEnum<MessageLayoutFlag>;
 
-class MessageLayout : boost::noncopyable
+struct MessagePaintResult {
+    bool hasAnimatedElements = false;
+};
+
+class MessageLayout
 {
 public:
     MessageLayout(MessagePtr message_);
     ~MessageLayout();
 
+    MessageLayout(const MessageLayout &) = delete;
+    MessageLayout &operator=(const MessageLayout &) = delete;
+
+    MessageLayout(MessageLayout &&) = delete;
+    MessageLayout &operator=(MessageLayout &&) = delete;
+
     const Message *getMessage();
     const MessagePtr &getMessagePtr() const;
 
+    /// In contrast to other metrics, the height and width are integers because
+    /// this is how the backing pixmap is measured - it needs whole integers.
     int getHeight() const;
     int getWidth() const;
 
     MessageLayoutFlags flags;
 
-    bool layout(int width, float scale_, MessageElementFlags flags);
+    bool layout(const MessageLayoutContext &ctx, bool shouldInvalidateBuffer);
 
     // Painting
-    void paint(QPainter &painter, int width, int y, int messageIndex,
-               Selection &selection, bool isLastReadMessage,
-               bool isWindowFocused, bool isMentions);
+    MessagePaintResult paint(const MessagePaintContext &ctx);
     void invalidateBuffer();
     void deleteBuffer();
     void deleteCache();
 
-    // Elements
-    const MessageLayoutElement *getElementAt(QPoint point);
-    int getLastCharacterIndex() const;
-    int getFirstMessageCharacterIndex() const;
-    int getSelectionIndex(QPoint position);
+    /**
+     * Returns a raw pointer to the element at the given point
+     *
+     * If no element is found at the given point, this returns a null pointer
+     */
+    const MessageLayoutElement *getElementAt(QPointF point) const;
+
+    /**
+     * @brief Returns the word bounds of the given element
+     *
+     * The first value is the index of the first character in the word,
+     * the second value is the index of the character after the last character in the word.
+     *
+     * Given the word "abc" by itself, we would return (0, 3)
+     *
+     *  V  V
+     * "abc "
+     */
+    std::pair<int, int> getWordBounds(
+        const MessageLayoutElement *hoveredElement, QPointF relativePos) const;
+
+    /**
+     * Get the index of the last character in this message's container
+     * This is the sum of all the characters in `elements_`
+     */
+    size_t getLastCharacterIndex() const;
+
+    /**
+     * Get the index of the first visible character in this message's container
+     * This is not always 0 in case there elements that are skipped
+     */
+    size_t getFirstMessageCharacterIndex() const;
+
+    /**
+     * Get the character index at the given position, in the context of selections
+     */
+    size_t getSelectionIndex(QPointF position) const;
     void addSelectionText(QString &str, uint32_t from = 0,
                           uint32_t to = UINT32_MAX,
                           CopyMode copymode = CopyMode::Everything);
 
     // Misc
     bool isDisabled() const;
-    bool isReplyable() const;
 
 private:
+    // methods
+    void actuallyLayout(const MessageLayoutContext &ctx);
+    void updateBuffer(QPixmap *buffer, const MessagePaintContext &ctx);
+
+    // Create new buffer if required, returning the buffer
+    QPixmap *ensureBuffer(QPainter &painter, qreal width, bool clear);
+
     // variables
-    MessagePtr message_;
-    std::shared_ptr<MessageLayoutContainer> container_;
-    std::shared_ptr<QPixmap> buffer_{};
+    const MessagePtr message_;
+    MessageLayoutContainer container_;
+    std::unique_ptr<QPixmap> buffer_;
     bool bufferValid_ = false;
 
-    int height_ = 0;
-
+    qreal height_ = 0;
     int currentLayoutWidth_ = -1;
     int layoutState_ = -1;
     float scale_ = -1;
-    unsigned int layoutCount_ = 0;
-    unsigned int bufferUpdatedCount_ = 0;
-
+    float imageScale_ = -1.F;
     MessageElementFlags currentWordFlags_;
 
-    int collapsedHeight_ = 32;
-
-    // methods
-    void actuallyLayout(int width, MessageElementFlags flags);
-    void updateBuffer(QPixmap *pixmap, int messageIndex, Selection &selection);
+#ifdef FOURTF
+    // Debug counters
+    unsigned int layoutCount_ = 0;
+    unsigned int bufferUpdatedCount_ = 0;
+#endif
 };
 
 using MessageLayoutPtr = std::shared_ptr<MessageLayout>;

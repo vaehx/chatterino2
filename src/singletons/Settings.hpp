@@ -1,59 +1,55 @@
 #pragma once
 
-#include "BaseSettings.hpp"
-#include "common/Channel.hpp"
+#include "common/ChatterinoSetting.hpp"
+#include "common/enums/MessageOverflow.hpp"
+#include "common/LastMessageLineStyle.hpp"
+#include "common/Modes.hpp"
 #include "common/SignalVector.hpp"
+#include "common/StreamerModeSetting.hpp"
+#include "common/ThumbnailPreviewMode.hpp"
+#include "common/TimeoutStackStyle.hpp"
+#include "controllers/filters/FilterRecord.hpp"
+#include "controllers/highlights/HighlightBadge.hpp"
+#include "controllers/highlights/HighlightBlacklistUser.hpp"
+#include "controllers/highlights/HighlightPhrase.hpp"
+#include "controllers/ignores/IgnorePhrase.hpp"
 #include "controllers/logging/ChannelLog.hpp"
+#include "controllers/moderationactions/ModerationAction.hpp"
+#include "controllers/nicknames/Nickname.hpp"
+#include "controllers/sound/ISoundController.hpp"
+#include "providers/emoji/EmojiStyle.hpp"
 #include "singletons/Toasts.hpp"
-#include "util/RapidJsonSerializeQString.hpp"
-#include "util/StreamerMode.hpp"
-#include "widgets/Notebook.hpp"
-#include "widgets/splits/SplitInput.hpp"
+#include "util/RapidJsonSerializeQString.hpp"  // IWYU pragma: keep
+#include "widgets/NotebookEnums.hpp"
 
 #include <pajlada/settings/setting.hpp>
 #include <pajlada/settings/settinglistener.hpp>
+#include <pajlada/signals/signalholder.hpp>
+
+#include <optional>
+#include <string_view>
 
 using TimeoutButton = std::pair<QString, int>;
 
 namespace chatterino {
 
-class HighlightPhrase;
-class HighlightBlacklistUser;
-class IgnorePhrase;
-class FilterRecord;
-using FilterRecordPtr = std::shared_ptr<FilterRecord>;
-class Nickname;
-class HighlightBadge;
-class ModerationAction;
+class Args;
 
-/// Settings which are available for reading on all threads.
-class ConcurrentSettings
-{
-public:
-    ConcurrentSettings();
+#ifdef Q_OS_WIN32
+#    define DEFAULT_FONT_FAMILY "Segoe UI"
+#    define DEFAULT_FONT_SIZE 10
+#else
+#    ifdef Q_OS_MACOS
+#        define DEFAULT_FONT_FAMILY "Helvetica Neue"
+#        define DEFAULT_FONT_SIZE 12
+#    else
+#        define DEFAULT_FONT_FAMILY "Arial"
+#        define DEFAULT_FONT_SIZE 11
+#    endif
+#endif
 
-    SignalVector<HighlightPhrase> &highlightedMessages;
-    SignalVector<HighlightPhrase> &highlightedUsers;
-    SignalVector<HighlightBadge> &highlightedBadges;
-    SignalVector<HighlightBlacklistUser> &blacklistedUsers;
-    SignalVector<IgnorePhrase> &ignoredMessages;
-    SignalVector<QString> &mutedChannels;
-    SignalVector<FilterRecordPtr> &filterRecords;
-    SignalVector<Nickname> &nicknames;
-    SignalVector<ModerationAction> &moderationActions;
-    SignalVector<ChannelLog> &loggedChannels;
-
-    bool isHighlightedUser(const QString &username);
-    bool isBlacklistedUser(const QString &username);
-    bool isMutedChannel(const QString &channelName);
-    bool toggleMutedChannel(const QString &channelName);
-
-private:
-    void mute(const QString &channelName);
-    void unmute(const QString &channelName);
-};
-
-ConcurrentSettings &getCSettings();
+void _actuallyRegisterSetting(
+    std::weak_ptr<pajlada::Settings::SettingData> setting);
 
 enum UsernameDisplayMode : int {
     Username = 1,                  // Username
@@ -61,29 +57,94 @@ enum UsernameDisplayMode : int {
     UsernameAndLocalizedName = 3,  // Username (Localized name)
 };
 
-enum HelixTimegateOverride : int {
-    // Use the default timegated behaviour
-    // This means we use the old IRC command up until the migration date and
-    // switch over to the Helix API only after the migration date
-    Timegate = 1,
-
-    // Ignore timegating and always force use the IRC command
-    AlwaysUseIRC = 2,
-
-    // Ignore timegating and always force use the Helix API
-    AlwaysUseHelix = 3,
+enum UsernameRightClickBehavior : int {
+    Reply = 0,
+    Mention = 1,
+    Ignore = 2,
 };
 
-/// Settings which are availlable for reading and writing on the gui thread.
+enum class ChatSendProtocol : int {
+    Default = 0,
+    IRC = 1,
+    Helix = 2,
+};
+
+enum class ShowModerationState : int {
+    // Always show this moderation-related item
+    Always = 0,
+    // Never show this moderation-related item
+    Never = 1,
+};
+
+enum class StreamLinkPreferredQuality : std::uint8_t {
+    Choose,
+    Source,
+    High,
+    Medium,
+    Low,
+    AudioOnly,
+};
+
+enum class TabStyle : std::uint8_t {
+    Normal,
+    Compact,
+};
+
+enum class EmoteTooltipScale : std::uint8_t {
+    Small,
+    Medium,
+    Large,
+    Huge,
+};
+
+constexpr std::optional<std::string_view> qmagicenumDisplayName(
+    EmoteTooltipScale value) noexcept
+{
+    switch (value)
+    {
+        case EmoteTooltipScale::Medium:
+            return "Medium (default)";
+
+        case EmoteTooltipScale::Small:
+        case EmoteTooltipScale::Large:
+        case EmoteTooltipScale::Huge:
+            return {};
+    }
+}
+
+/// Settings which are available for reading and writing on the gui thread.
 // These settings are still accessed concurrently in the code but it is bad practice.
-class Settings : public ABSettings, public ConcurrentSettings
+class Settings
 {
     static Settings *instance_;
+    Settings *prevInstance_ = nullptr;
+
+    bool disableSaving;
 
 public:
-    Settings(const QString &settingsDirectory);
+    Settings(const Args &args, const QString &settingsDirectory);
+    ~Settings();
 
     static Settings &instance();
+
+    /// Request the settings to be saved to file
+    ///
+    /// Depending on the launch options, a save might end up not happening
+    void requestSave() const;
+
+    void saveSnapshot();
+    void restoreSnapshot();
+
+    void disableSave();
+
+    /// Returns true if chat messages should be sent over Helix
+    bool shouldSendHelixChat() const;
+
+    FloatSetting uiScale = {"/appearance/uiScale2", 1};
+    BoolSetting windowTopMost = {"/appearance/windowAlwaysOnTop", false};
+
+    float getClampedUiScale() const;
+    void setClampedUiScale(float value);
 
     /// Appearance
     BoolSetting showTimestamps = {"/appearance/messages/showTimestamps", true};
@@ -93,8 +154,10 @@ public:
                                       "h:mm"};
     BoolSetting showLastMessageIndicator = {
         "/appearance/messages/showLastMessageIndicator", false};
-    EnumSetting<Qt::BrushStyle> lastMessagePattern = {
-        "/appearance/messages/lastMessagePattern", Qt::SolidPattern};
+    EnumSetting<LastMessageLineStyle> lastMessagePattern = {
+        "/appearance/messages/lastMessagePattern",
+        LastMessageLineStyle::Solid,
+    };
     QStringSetting lastMessageColor = {"/appearance/messages/lastMessageColor",
                                        "#7f2026"};
     BoolSetting showEmptyInput = {"/appearance/showEmptyInputBox", true};
@@ -104,6 +167,8 @@ public:
         "/appearance/messages/messageOverflow", MessageOverflow::Highlight};
     BoolSetting separateMessages = {"/appearance/messages/separateMessages",
                                     false};
+    BoolSetting fadeMessageHistory = {"/appearance/messages/fadeMessageHistory",
+                                      true};
     BoolSetting hideModerated = {"/appearance/messages/hideModerated", false};
     BoolSetting hideModerationActions = {
         "/appearance/messages/hideModerationActions", false};
@@ -117,9 +182,25 @@ public:
 
     EnumSetting<NotebookTabLocation> tabDirection = {"/appearance/tabDirection",
                                                      NotebookTabLocation::Top};
+    EnumSetting<NotebookTabVisibility> tabVisibility = {
+        "/appearance/tabVisibility",
+        NotebookTabVisibility::AllTabs,
+    };
 
     //    BoolSetting collapseLongMessages =
     //    {"/appearance/messages/collapseLongMessages", false};
+    QStringSetting chatFontFamily{
+        "/appearance/currentFontFamily",
+        DEFAULT_FONT_FAMILY,
+    };
+    IntSetting chatFontSize{
+        "/appearance/currentFontSize",
+        DEFAULT_FONT_SIZE,
+    };
+    IntSetting chatFontWeight = {
+        "/appearance/currentFontWeight",
+        QFont::Normal,
+    };
     BoolSetting hideReplyContext = {"/appearance/hideReplyContext", false};
     BoolSetting showReplyButton = {"/appearance/showReplyButton", false};
     BoolSetting stripReplyMention = {"/appearance/stripReplyMention", true};
@@ -130,6 +211,10 @@ public:
     FloatSetting boldScale = {"/appearance/boldScale", 63};
     BoolSetting showTabCloseButton = {"/appearance/showTabCloseButton", true};
     BoolSetting showTabLive = {"/appearance/showTabLiveButton", true};
+    EnumStringSetting<TabStyle> tabStyle = {
+        "/appearance/tabStyle",
+        TabStyle::Normal,
+    };
     BoolSetting hidePreferencesButton = {"/appearance/hidePreferencesButton",
                                          false};
     BoolSetting hideUserButton = {"/appearance/hideUserButton", false};
@@ -152,6 +237,22 @@ public:
     // BoolSetting useCustomWindowFrame = {"/appearance/useCustomWindowFrame",
     // false};
 
+    FloatSetting overlayScaleFactor = {"/appearance/overlay/scaleFactor", 1};
+    IntSetting overlayBackgroundOpacity = {
+        "/appearance/overlay/backgroundOpacity", 50};
+    BoolSetting enableOverlayShadow = {"/appearance/overlay/shadow", true};
+    IntSetting overlayShadowOpacity = {"/appearance/overlay/shadowOpacity",
+                                       255};
+    QStringSetting overlayShadowColor = {"/appearance/overlay/shadowColor",
+                                         "#000"};
+    // These should be floats, but there's no good input UI for them
+    IntSetting overlayShadowOffsetX = {"/appearance/overlay/shadowOffsetX", 2};
+    IntSetting overlayShadowOffsetY = {"/appearance/overlay/shadowOffsetY", 2};
+    IntSetting overlayShadowRadius = {"/appearance/overlay/shadowRadius", 8};
+
+    float getClampedOverlayScale() const;
+    void setClampedOverlayScale(float value);
+
     // Badges
     BoolSetting showBadgesGlobalAuthority = {
         "/appearance/badges/GlobalAuthority", true};
@@ -169,6 +270,25 @@ public:
     BoolSetting useCustomFfzVipBadges = {
         "/appearance/badges/useCustomFfzVipBadges", true};
     BoolSetting showBadgesSevenTV = {"/appearance/badges/seventv", true};
+    QSizeSetting lastPopupSize = {
+        "/appearance/lastPopup/size",
+        {300, 500},
+    };
+
+    // Scrollbar
+    BoolSetting hideScrollbarThumb = {
+        "/appearance/scrollbar/hideThumb",
+        false,
+    };
+    BoolSetting hideScrollbarHighlights = {
+        "/appearance/scrollbar/hideHighlights",
+        false,
+    };
+
+    BoolSetting pulseTextInputOnSelfMessage = {
+        "/appearance/pulseTextInputOnSelfMessage",
+        false,
+    };
 
     /// Behaviour
     BoolSetting allowDuplicateMessages = {"/behaviour/allowDuplicateMessages",
@@ -181,8 +301,24 @@ public:
     BoolSetting autoCloseUserPopup = {"/behaviour/autoCloseUserPopup", true};
     BoolSetting autoCloseThreadPopup = {"/behaviour/autoCloseThreadPopup",
                                         false};
-    // BoolSetting twitchSeperateWriteConnection =
-    // {"/behaviour/twitchSeperateWriteConnection", false};
+
+    EnumSetting<UsernameRightClickBehavior> usernameRightClickBehavior = {
+        "/behaviour/usernameRightClickBehavior",
+        UsernameRightClickBehavior::Mention,
+    };
+    EnumSetting<UsernameRightClickBehavior> usernameRightClickModifierBehavior =
+        {
+            "/behaviour/usernameRightClickBehaviorWithModifier",
+            UsernameRightClickBehavior::Reply,
+    };
+    EnumSetting<Qt::KeyboardModifier> usernameRightClickModifier = {
+        "/behaviour/usernameRightClickModifier",
+        Qt::KeyboardModifier::ShiftModifier};
+
+    BoolSetting autoSubToParticipatedThreads = {
+        "/behaviour/autoSubToParticipatedThreads",
+        true,
+    };
 
     // Auto-completion
     BoolSetting onlyFetchChattersForSmallerStreamers = {
@@ -197,6 +333,14 @@ public:
         "/behaviour/autocompletion/emoteCompletionWithColon", true};
     BoolSetting showUsernameCompletionMenu = {
         "/behaviour/autocompletion/showUsernameCompletionMenu", true};
+    BoolSetting alwaysIncludeBroadcasterInUserCompletions = {
+        "/behaviour/autocompletion/alwaysIncludeBroadcasterInUserCompletions",
+        true,
+    };
+    BoolSetting useSmartEmoteCompletion = {
+        "/experiments/useSmartEmoteCompletion",
+        false,
+    };
 
     FloatSetting pauseOnHoverDuration = {"/behaviour/pauseOnHoverDuration", 0};
     EnumSetting<Qt::KeyboardModifier> pauseChatModifier = {
@@ -205,19 +349,28 @@ public:
     BoolSetting mentionUsersWithComma = {"/behaviour/mentionUsersWithComma",
                                          true};
 
-    /// Commands
-    BoolSetting allowCommandsAtEnd = {"/commands/allowCommandsAtEnd", false};
+    BoolSetting disableTabRenamingOnClick = {
+        "/behaviour/disableTabRenamingOnClick",
+        false,
+    };
 
     /// Emotes
     BoolSetting scaleEmotesByLineHeight = {"/emotes/scaleEmotesByLineHeight",
                                            false};
     BoolSetting enableEmoteImages = {"/emotes/enableEmoteImages", true};
     BoolSetting animateEmotes = {"/emotes/enableGifAnimations", true};
+    BoolSetting enableZeroWidthEmotes = {"/emotes/enableZeroWidthEmotes", true};
     FloatSetting emoteScale = {"/emotes/scale", 1.f};
+    EnumStringSetting<EmoteTooltipScale> emoteTooltipScale = {
+        "/emotes/tooltipScale",
+        EmoteTooltipScale::Medium,
+    };
     BoolSetting showUnlistedSevenTVEmotes = {
         "/emotes/showUnlistedSevenTVEmotes", false};
-
-    QStringSetting emojiSet = {"/emotes/emojiSet", "Twitter"};
+    EnumStringSetting<EmojiStyle> emojiSet = {
+        "/emotes/emojiSet",
+        EmojiStyle::Twitter,
+    };
 
     BoolSetting stackBits = {"/emotes/stackBits", false};
     BoolSetting removeSpacesBetweenEmotes = {
@@ -231,6 +384,7 @@ public:
     BoolSetting enableSevenTVGlobalEmotes = {"/emotes/seventv/global", true};
     BoolSetting enableSevenTVChannelEmotes = {"/emotes/seventv/channel", true};
     BoolSetting enableSevenTVEventAPI = {"/emotes/seventv/eventapi", true};
+    BoolSetting sendSevenTVActivity = {"/emotes/seventv/sendActivity", true};
 
     /// Links
     BoolSetting linksDoubleClickOnly = {"/links/doubleClickToOpen", false};
@@ -241,8 +395,16 @@ public:
     BoolSetting lowercaseDomains = {"/links/linkLowercase", true};
 
     /// Streamer Mode
+    // TODO: Should these settings be converted to booleans that live outside of
+    // streamer mode?
+    // Something like:
+    //  - "Hide when streamer mode is enabled"
+    //  - "Always hide"
+    //  - "Don't hide"
     EnumSetting<StreamerModeSetting> enableStreamerMode = {
-        "/streamerMode/enabled", StreamerModeSetting::DetectStreamingSoftware};
+        "/streamerMode/enabled",
+        StreamerModeSetting::DetectStreamingSoftware,
+    };
     BoolSetting streamerModeHideUsercardAvatars = {
         "/streamerMode/hideUsercardAvatars", true};
     BoolSetting streamerModeHideLinkThumbnails = {
@@ -251,15 +413,19 @@ public:
         "/streamerMode/hideViewerCountAndDuration", false};
     BoolSetting streamerModeHideModActions = {"/streamerMode/hideModActions",
                                               true};
+    BoolSetting streamerModeHideRestrictedUsers = {
+        "/streamerMode/hideRestrictedUsers",
+        true,
+    };
     BoolSetting streamerModeMuteMentions = {"/streamerMode/muteMentions", true};
     BoolSetting streamerModeSuppressLiveNotifications = {
         "/streamerMode/supressLiveNotifications", false};
     BoolSetting streamerModeSuppressInlineWhispers = {
         "/streamerMode/suppressInlineWhispers", true};
-
-    /// Ignored Phrases
-    QStringSetting ignoredPhraseReplace = {"/ignore/ignoredPhraseReplace",
-                                           "***"};
+    BoolSetting streamerModeHideBlockedTermText = {
+        "/streamerMode/hideBlockedTermText",
+        true,
+    };
 
     /// Blocked Users
     BoolSetting enableTwitchBlockedUsers = {"/ignore/enableTwitchBlockedUsers",
@@ -271,8 +437,13 @@ public:
     IntSetting timeoutStackStyle = {
         "/moderation/timeoutStackStyle",
         static_cast<int>(TimeoutStackStyle::Default)};
+    EnumStringSetting<ShowModerationState> showBlockedTermAutomodMessages = {
+        "/moderation/showBlockedTermAutomodMessages",
+        ShowModerationState::Always,
+    };
     EnumSetting<Qt::KeyboardModifier> modButtonRequiredModifier = {
         "/moderation/modButtonRequiredModifier", Qt::NoModifier};
+    };
 
     /// Highlighting
     //    BoolSetting enableHighlights = {"/highlighting/enabled", true};
@@ -351,6 +522,28 @@ public:
                                            ""};
     QStringSetting subHighlightColor = {"/highlighting/subHighlightColor", ""};
 
+    BoolSetting enableAutomodHighlight = {
+        "/highlighting/automod/enabled",
+        true,
+    };
+    BoolSetting showAutomodInMentions = {
+        "/highlighting/automod/showInMentions",
+        false,
+    };
+    BoolSetting enableAutomodHighlightSound = {
+        "/highlighting/automod/enableSound",
+        false,
+    };
+    BoolSetting enableAutomodHighlightTaskbar = {
+        "/highlighting/automod/enableTaskbarFlashing",
+        false,
+    };
+    QStringSetting automodHighlightSoundUrl = {
+        "/highlighting/automod/soundUrl",
+        "",
+    };
+    QStringSetting automodHighlightColor = {"/highlighting/automod/color", ""};
+
     BoolSetting enableThreadHighlight = {
         "/highlighting/thread/nameIsHighlightKeyword", true};
     BoolSetting showThreadHighlightInMentions = {
@@ -378,7 +571,18 @@ public:
     BoolSetting enableLogging = {"/logging/enabled", false};
     BoolSetting onlyLogListedChannels = {"/logging/onlyLogListedChannels",
                                          false};
-
+    BoolSetting separatelyStoreStreamLogs = {
+        "/logging/separatelyStoreStreamLogs",
+        false,
+    };
+    QStringSetting logTimestampFormat = {
+        "/logging/logTimestampFormat",
+        "hh:mm:ss",
+    };
+    BoolSetting tryUseTwitchTimestamps = {
+        "/logging/tryUseTwitchTimestamps",
+        false,
+    };
     QStringSetting logPath = {"/logging/path", ""};
 
     QStringSetting pathHighlightSound = {"/highlighting/highlightSoundPath",
@@ -402,8 +606,16 @@ public:
                                             "qrc:/sounds/ping3.wav"};
     BoolSetting notificationOnAnyChannel = {"/notifications/onAnyChannel",
                                             false};
+    BoolSetting suppressInitialLiveNotification = {
+        "/notifications/suppressInitialLive", false};
 
     BoolSetting notificationToast = {"/notifications/enableToast", false};
+    BoolSetting createShortcutForToasts = {
+        "/notifications/createShortcutForToasts",
+        (Modes::instance().isPortable || Modes::instance().isExternallyPackaged)
+            ? false
+            : true,
+    };
     IntSetting openFromToast = {"/notifications/openFromToast",
                                 static_cast<int>(ToastReaction::OpenInBrowser)};
 
@@ -412,8 +624,10 @@ public:
     BoolSetting streamlinkUseCustomPath = {"/external/streamlink/useCustomPath",
                                            false};
     QStringSetting streamlinkPath = {"/external/streamlink/customPath", ""};
-    QStringSetting preferredQuality = {"/external/streamlink/quality",
-                                       "Choose"};
+    EnumStringSetting<StreamLinkPreferredQuality> preferredQuality = {
+        "/external/streamlink/quality",
+        StreamLinkPreferredQuality::Choose,
+    };
     QStringSetting streamlinkOpts = {"/external/streamlink/options", ""};
 
     // Custom URI Scheme
@@ -436,10 +650,10 @@ public:
 #ifdef Q_OS_LINUX
     BoolSetting useKeyring = {"/misc/useKeyring", true};
 #endif
-    BoolSetting enableExperimentalIrc = {"/misc/experimentalIrc", false};
 
     IntSetting startUpNotification = {"/misc/startUpNotification", 0};
     QStringSetting currentVersion = {"/misc/currentVersion", ""};
+    IntSetting overlayKnowledgeLevel = {"/misc/overlayKnowledgeLevel", 0};
 
     BoolSetting loadTwitchMessageHistoryOnConnect = {
         "/misc/twitch/loadMessageHistoryOnConnect", true};
@@ -456,49 +670,36 @@ public:
         1000,
     };
 
-    // Temporary time-gate-overrides
-    EnumSetting<HelixTimegateOverride> helixTimegateRaid = {
-        "/misc/twitch/helix-timegate/raid",
-        HelixTimegateOverride::Timegate,
-    };
-    EnumSetting<HelixTimegateOverride> helixTimegateWhisper = {
-        "/misc/twitch/helix-timegate/whisper",
-        HelixTimegateOverride::Timegate,
-    };
-    EnumSetting<HelixTimegateOverride> helixTimegateVIPs = {
-        "/misc/twitch/helix-timegate/vips",
-        HelixTimegateOverride::Timegate,
-    };
-    EnumSetting<HelixTimegateOverride> helixTimegateModerators = {
-        "/misc/twitch/helix-timegate/moderators",
-        HelixTimegateOverride::Timegate,
-    };
+    EnumStringSetting<ChatSendProtocol> chatSendProtocol = {
+        "/misc/chatSendProtocol", ChatSendProtocol::Default};
 
-    EnumSetting<HelixTimegateOverride> helixTimegateCommercial = {
-        "/misc/twitch/helix-timegate/commercial",
-        HelixTimegateOverride::Timegate,
-    };
-
-    IntSetting emotesTooltipPreview = {"/misc/emotesTooltipPreview", 1};
     BoolSetting openLinksIncognito = {"/misc/openLinksIncognito", 0};
 
+    EnumSetting<ThumbnailPreviewMode> emotesTooltipPreview = {
+        "/misc/emotesTooltipPreview",
+        ThumbnailPreviewMode::AlwaysShow,
+    };
     QStringSetting cachePath = {"/cache/path", ""};
-    BoolSetting restartOnCrash = {"/misc/restartOnCrash", false};
     BoolSetting attachExtensionToAnyProcess = {
         "/misc/attachExtensionToAnyProcess", false};
     BoolSetting askOnImageUpload = {"/misc/askOnImageUpload", true};
     BoolSetting informOnTabVisibilityToggle = {"/misc/askOnTabVisibilityToggle",
                                                true};
     BoolSetting lockNotebookLayout = {"/misc/lockNotebookLayout", false};
-
-    /// Debug
-    BoolSetting showUnhandledIrcMessages = {"/debug/showUnhandledIrcMessages",
-                                            false};
+    BoolSetting showPronouns = {"/misc/showPronouns", false};
 
     /// UI
-    // Purely QOL settings are here (like last item in a list).
-    IntSetting lastSelectChannelTab = {"/ui/lastSelectChannelTab", 0};
-    IntSetting lastSelectIrcConn = {"/ui/lastSelectIrcConn", 0};
+
+    BoolSetting showSendButton = {"/ui/showSendButton", false};
+
+    struct {
+        // this isn't shown in the UI
+        BoolSetting enabled = {"/plugins/repl/enabled", false};
+        // An empty string implies the default monospace font
+        QStringSetting fontFamily = {"/plugins/repl/fontFamily", {}};
+        QStringSetting fontStyle = {"/plugins/repl/fontStyle", "Regular"};
+        IntSetting fontSize = {"/plugins/repl/fontSize", 10};
+    } pluginRepl;
 
     // Similarity
     BoolSetting similarityEnabled = {"/similarity/similarityEnabled", false};
@@ -529,8 +730,94 @@ public:
          {"d", 1},
          {"w", 1}}};
 
+    BoolSetting pluginsEnabled = {"/plugins/supportEnabled", false};
+    ChatterinoSetting<std::vector<QString>> enabledPlugins = {
+        "/plugins/enabledPlugins", {}};
+
+    // Advanced
+    EnumStringSetting<SoundBackend> soundBackend = {
+        "/sound/backend",
+        SoundBackend::Miniaudio,
+    };
+    BoolSetting enableExperimentalEventSub = {
+        "/eventsub/enableExperimental",
+        true,
+    };
+
+    QStringSetting additionalExtensionIDs{"/misc/additionalExtensionIDs", ""};
+
+private:
+    ChatterinoSetting<std::vector<HighlightPhrase>> highlightedMessagesSetting =
+        {"/highlighting/highlights"};
+    ChatterinoSetting<std::vector<HighlightPhrase>> highlightedUsersSetting = {
+        "/highlighting/users"};
+    ChatterinoSetting<std::vector<HighlightBadge>> highlightedBadgesSetting = {
+        "/highlighting/badges"};
+    ChatterinoSetting<std::vector<HighlightBlacklistUser>>
+        blacklistedUsersSetting = {"/highlighting/blacklist"};
+    ChatterinoSetting<std::vector<IgnorePhrase>> ignoredMessagesSetting = {
+        "/ignore/phrases"};
+    ChatterinoSetting<std::vector<QString>> mutedChannelsSetting = {
+        "/pings/muted"};
+    ChatterinoSetting<std::vector<FilterRecordPtr>> filterRecordsSetting = {
+        "/filtering/filters"};
+    ChatterinoSetting<std::vector<Nickname>> nicknamesSetting = {"/nicknames"};
+    ChatterinoSetting<std::vector<ModerationAction>> moderationActionsSetting =
+        {"/moderation/actions"};
+    ChatterinoSetting<std::vector<ChannelLog>> loggedChannelsSetting = {
+        "/logging/channels"};
+    SignalVector<QString> mutedChannels;
+
+public:
+    SignalVector<HighlightPhrase> highlightedMessages;
+    SignalVector<HighlightPhrase> highlightedUsers;
+    SignalVector<HighlightBadge> highlightedBadges;
+    SignalVector<HighlightBlacklistUser> blacklistedUsers;
+    SignalVector<IgnorePhrase> ignoredMessages;
+    SignalVector<FilterRecordPtr> filterRecords;
+    SignalVector<Nickname> nicknames;
+    SignalVector<ModerationAction> moderationActions;
+    SignalVector<ChannelLog> loggedChannels;
+
+    bool isHighlightedUser(const QString &username);
+    bool isBlacklistedUser(const QString &username);
+    bool isMutedChannel(const QString &channelName);
+    bool toggleMutedChannel(const QString &channelName);
+    std::optional<QString> matchNickname(const QString &username);
+    void mute(const QString &channelName);
+    void unmute(const QString &channelName);
+
 private:
     void updateModerationActions();
+
+    std::unique_ptr<rapidjson::Document> snapshot_;
+
+    pajlada::Signals::SignalHolder signalHolder;
 };
 
+Settings *getSettings();
+
 }  // namespace chatterino
+
+template <>
+constexpr magic_enum::customize::customize_t
+    magic_enum::customize::enum_name<chatterino::StreamLinkPreferredQuality>(
+        chatterino::StreamLinkPreferredQuality value) noexcept
+{
+    using chatterino::StreamLinkPreferredQuality;
+    switch (value)
+    {
+        case chatterino::StreamLinkPreferredQuality::Choose:
+        case chatterino::StreamLinkPreferredQuality::Source:
+        case chatterino::StreamLinkPreferredQuality::High:
+        case chatterino::StreamLinkPreferredQuality::Medium:
+        case chatterino::StreamLinkPreferredQuality::Low:
+            return default_tag;
+
+        case chatterino::StreamLinkPreferredQuality::AudioOnly:
+            return "Audio only";
+
+        default:
+            return default_tag;
+    }
+}

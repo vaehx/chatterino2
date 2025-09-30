@@ -2,7 +2,6 @@
 
 #include "common/LinkParser.hpp"
 #include "messages/Message.hpp"
-#include "util/Qt.hpp"
 
 namespace chatterino {
 
@@ -15,8 +14,10 @@ bool LinkPredicate::appliesToImpl(const Message &message)
 {
     for (const auto &word : message.messageText.split(' ', Qt::SkipEmptyParts))
     {
-        if (LinkParser(word).hasMatch())
+        if (linkparser::parse(word).has_value())
+        {
             return true;
+        }
     }
 
     return false;

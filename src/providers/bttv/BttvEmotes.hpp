@@ -3,9 +3,15 @@
 #include "common/Aliases.hpp"
 #include "common/Atomic.hpp"
 
-#include <boost/optional.hpp>
+#include <pajlada/signals/scoped-connection.hpp>
+#include <QJsonObject>
+#include <QString>
 
+#include <functional>
 #include <memory>
+#include <optional>
+#include <utility>
+#include <vector>
 
 namespace chatterino {
 
@@ -15,6 +21,13 @@ class EmoteMap;
 class Channel;
 struct BttvLiveUpdateEmoteUpdateAddMessage;
 struct BttvLiveUpdateEmoteRemoveMessage;
+
+namespace bttv::detail {
+
+EmoteMap parseChannelEmotes(const QJsonObject &jsonRoot,
+                            const QString &channelDisplayName);
+
+}  // namespace bttv::detail
 
 class BttvEmotes final
 {
@@ -27,13 +40,14 @@ public:
     BttvEmotes();
 
     std::shared_ptr<const EmoteMap> emotes() const;
-    boost::optional<EmotePtr> emote(const EmoteName &name) const;
+    std::optional<EmotePtr> emote(const EmoteName &name) const;
     void loadEmotes();
+    void setEmotes(std::shared_ptr<const EmoteMap> emotes);
     static void loadChannel(std::weak_ptr<Channel> channel,
                             const QString &channelId,
                             const QString &channelDisplayName,
                             std::function<void(EmoteMap &&)> callback,
-                            bool manualRefresh);
+                            bool manualRefresh, bool cacheHit);
 
     /**
      * Adds an emote to the `channelEmoteMap`.
@@ -54,7 +68,7 @@ public:
      *
      * @return pair<old emote, new emote> if any emote was updated.
      */
-    static boost::optional<std::pair<EmotePtr, EmotePtr>> updateEmote(
+    static std::optional<std::pair<EmotePtr, EmotePtr>> updateEmote(
         const QString &channelDisplayName,
         Atomic<std::shared_ptr<const EmoteMap>> &channelEmoteMap,
         const BttvLiveUpdateEmoteUpdateAddMessage &message);
@@ -66,12 +80,15 @@ public:
      *
      * @return The removed emote if any emote was removed.
      */
-    static boost::optional<EmotePtr> removeEmote(
+    static std::optional<EmotePtr> removeEmote(
         Atomic<std::shared_ptr<const EmoteMap>> &channelEmoteMap,
         const BttvLiveUpdateEmoteRemoveMessage &message);
 
 private:
     Atomic<std::shared_ptr<const EmoteMap>> global_;
+
+    std::vector<std::unique_ptr<pajlada::Signals::ScopedConnection>>
+        managedConnections;
 };
 
 }  // namespace chatterino

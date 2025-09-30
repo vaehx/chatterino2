@@ -1,4 +1,4 @@
-#include "Modes.hpp"
+#include "common/Modes.hpp"
 
 #include "util/CombinePath.hpp"
 
@@ -23,6 +23,10 @@ Modes::Modes()
         else if (line == "portable")
         {
             this->isPortable = true;
+        }
+        else if (line == "externally-packaged")
+        {
+            this->isExternallyPackaged = true;
         }
     }
 }

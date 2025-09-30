@@ -4,8 +4,7 @@
 
 #include <pajlada/signals/scoped-connection.hpp>
 #include <pajlada/signals/signal.hpp>
-
-#include <chrono>
+#include <QPointer>
 
 class QCheckBox;
 
@@ -14,34 +13,42 @@ namespace chatterino {
 class Channel;
 using ChannelPtr = std::shared_ptr<Channel>;
 class Label;
+class EditUserNotesDialog;
 class ChannelView;
 class Split;
+class LabelButton;
+class PixmapButton;
+class LiveIndicator;
 
 class UserInfoPopup final : public DraggablePopup
 {
     Q_OBJECT
 
 public:
-    UserInfoPopup(bool closeAutomatically, QWidget *parent,
-                  Split *split = nullptr);
+    /**
+     * @param closeAutomatically Decides whether the popup should close when it loses focus
+     * @param split Will be used as the popup's parent. Must not be null
+     */
+    UserInfoPopup(bool closeAutomatically, Split *split);
 
     void setData(const QString &name, const ChannelPtr &channel);
     void setData(const QString &name, const ChannelPtr &contextChannel,
                  const ChannelPtr &openingChannel);
 
 protected:
-    virtual void themeChangedEvent() override;
-    virtual void scaleChangedEvent(float scale) override;
+    void themeChangedEvent() override;
+    void scaleChangedEvent(float scale) override;
+    void windowDeactivationEvent() override;
 
 private:
     void installEvents();
     void updateUserData();
     void updateLatestMessages();
-    void updateFocusLoss();
+    void updateNotes();
 
     void loadAvatar(const QUrl &url);
-    bool isMod_;
-    bool isBroadcaster_;
+    bool isMod_{};
+    bool isBroadcaster_{};
 
     Split *split_;
 
@@ -58,32 +65,41 @@ private:
     pajlada::Signals::NoArgSignal userStateChanged_;
 
     std::unique_ptr<pajlada::Signals::ScopedConnection> refreshConnection_;
+    std::unique_ptr<pajlada::Signals::ScopedConnection>
+        userDataUpdatedConnection_;
 
     // If we should close the dialog automatically if the user clicks out
-    // Initially set based on the "Automatically close usercard when it loses focus" setting
-    // If that setting is enabled, this can be toggled on and off using the pin in the top-right corner
-    bool closeAutomatically_;
+    // Set based on the "Automatically close usercard when it loses focus" setting
+    // Pinned status is tracked in DraggablePopup::isPinned_.
+    const bool closeAutomatically_;
 
     struct {
-        Button *avatarButton = nullptr;
-        Button *localizedNameCopyButton = nullptr;
+        PixmapButton *avatarButton = nullptr;
+        PixmapButton *localizedNameCopyButton = nullptr;
 
         Label *nameLabel = nullptr;
         Label *localizedNameLabel = nullptr;
+        Label *pronounsLabel = nullptr;
         Label *followerCountLabel = nullptr;
         Label *createdDateLabel = nullptr;
         Label *userIDLabel = nullptr;
-        // Can be uninitialized if usercard is not configured to close on focus loss
-        Button *pinButton = nullptr;
         Label *followageLabel = nullptr;
         Label *subageLabel = nullptr;
 
+        LiveIndicator *liveIndicator = nullptr;
+
         QCheckBox *block = nullptr;
         QCheckBox *ignoreHighlights = nullptr;
+        Label *notesPreview = nullptr;
+        LabelButton *notesAdd = nullptr;
 
         Label *noMessagesLabel = nullptr;
         ChannelView *latestMessages = nullptr;
+
+        LabelButton *usercardLabel = nullptr;
     } ui_;
+
+    QPointer<EditUserNotesDialog> editUserNotesDialog_;
 
     class TimeoutWidget : public BaseWidget
     {

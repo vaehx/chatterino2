@@ -3,6 +3,8 @@
 #include "messages/Image.hpp"
 #include "singletons/Settings.hpp"
 
+#include <QJsonObject>
+
 namespace chatterino {
 
 ImageSet::ImageSet()
@@ -61,16 +63,18 @@ const ImagePtr &ImageSet::getImage3() const
 
 const std::shared_ptr<Image> &getImagePriv(const ImageSet &set, float scale)
 {
-#ifndef CHATTERINO_TEST
     scale *= getSettings()->emoteScale;
-#endif
 
     int quality = 1;
 
     if (scale > 2.001f)
+    {
         quality = 3;
+    }
     else if (scale > 1.001f)
+    {
         quality = 2;
+    }
 
     if (!set.getImage3()->isEmpty() && quality == 3)
     {
@@ -94,17 +98,27 @@ const ImagePtr &ImageSet::getImageOrLoaded(float scale) const
 
     // prefer other image if selected image is not loaded yet
     if (result->loaded())
+    {
         return result;
+    }
     else if (this->imageX3_ && !this->imageX3_->isEmpty() &&
              this->imageX3_->loaded())
+    {
         return this->imageX3_;
+    }
     else if (this->imageX2_ && !this->imageX2_->isEmpty() &&
              this->imageX2_->loaded())
+    {
         return this->imageX2_;
+    }
     else if (this->imageX1_->loaded())
+    {
         return this->imageX1_;
+    }
     else
+    {
         return result;
+    }
 }
 
 const ImagePtr &ImageSet::getImage(float scale) const
@@ -121,6 +135,24 @@ bool ImageSet::operator==(const ImageSet &other) const
 bool ImageSet::operator!=(const ImageSet &other) const
 {
     return !this->operator==(other);
+}
+
+QJsonObject ImageSet::toJson() const
+{
+    QJsonObject obj;
+    if (!this->imageX1_->isEmpty())
+    {
+        obj[u"1x"] = this->imageX1_->url().string;
+    }
+    if (!this->imageX2_->isEmpty())
+    {
+        obj[u"2x"] = this->imageX2_->url().string;
+    }
+    if (!this->imageX3_->isEmpty())
+    {
+        obj[u"3x"] = this->imageX3_->url().string;
+    }
+    return obj;
 }
 
 }  // namespace chatterino

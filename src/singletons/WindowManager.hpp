@@ -1,18 +1,21 @@
 #pragma once
 
 #include "common/FlagsEnum.hpp"
-#include "common/Singleton.hpp"
+#include "util/SignalListener.hpp"
 #include "widgets/splits/SplitContainer.hpp"
 
 #include <pajlada/settings/settinglistener.hpp>
+#include <QObject>
 #include <QPoint>
 #include <QTimer>
 
 #include <memory>
+#include <set>
 
 namespace chatterino {
 
 class Settings;
+class Args;
 class Paths;
 class Window;
 class ChannelView;
@@ -24,6 +27,8 @@ using ChannelPtr = std::shared_ptr<Channel>;
 struct Message;
 using MessagePtr = std::shared_ptr<const Message>;
 class WindowLayout;
+class Theme;
+class Fonts;
 
 enum class MessageElementFlag : int64_t;
 using MessageElementFlags = FlagsEnum<MessageElementFlag>;
@@ -32,13 +37,24 @@ enum class WindowType;
 enum class SettingsDialogPreference;
 class FramelessEmbedWindow;
 
-class WindowManager final : public Singleton
+class WindowManager final : public QObject
 {
+    Q_OBJECT
+
+    Theme &themes;
+    const Args &appArgs;
+
 public:
     static const QString WINDOW_LAYOUT_FILENAME;
 
-    WindowManager();
-    ~WindowManager() override;
+    explicit WindowManager(const Args &appArgs_, const Paths &paths,
+                           Settings &settings, Theme &themes_, Fonts &fonts);
+    ~WindowManager();
+
+    WindowManager(const WindowManager &) = delete;
+    WindowManager(WindowManager &&) = delete;
+    WindowManager &operator=(const WindowManager &) = delete;
+    WindowManager &operator=(WindowManager &&) = delete;
 
     static void encodeTab(SplitContainer *tab, bool isSelected,
                           QJsonObject &obj);
@@ -61,11 +77,22 @@ public:
     // This is called, for example, when the emote scale or timestamp format has
     // changed
     void forceLayoutChannelViews();
+
+    // Tell a channel (or all channels if channel is nullptr) to invalidate all paint buffers
+    void invalidateChannelViewBuffers(Channel *channel = nullptr);
+
     void repaintVisibleChatWidgets(Channel *channel = nullptr);
     void repaintGifEmotes();
 
     Window &getMainWindow();
-    Window &getSelectedWindow();
+
+    // Returns a pointer to the last selected window.
+    // Edge cases:
+    //  - If the application was not focused since the start, this will return a pointer to the main window.
+    //  - If the window was closed this points to the main window.
+    //  - If the window was unfocused since being selected, this function will still return it.
+    Window *getLastSelectedWindow() const;
+
     Window &createWindow(WindowType type, bool show = true,
                          QWidget *parent = nullptr);
 
@@ -83,11 +110,12 @@ public:
      */
     void scrollToMessage(const MessagePtr &message);
 
-    QPoint emotePopupPos();
-    void setEmotePopupPos(QPoint pos);
+    QRect emotePopupBounds() const;
+    void setEmotePopupBounds(QRect bounds);
 
-    virtual void initialize(Settings &settings, Paths &paths) override;
-    virtual void save() override;
+    // Set up some final signals & actually show the windows
+    void initialize();
+    void save();
     void closeAll();
 
     int getGeneration() const;
@@ -106,18 +134,22 @@ public:
     // again
     void queueSave();
 
+    /// Toggles the inertia in all open overlay windows
+    void toggleAllOverlayInertia();
+
+    std::set<QString> getVisibleChannelNames() const;
+
     /// Signals
     pajlada::Signals::NoArgSignal gifRepaintRequested;
 
     // This signal fires whenever views rendering a channel, or all views if the
     // channel is a nullptr, need to redo their layout
     pajlada::Signals::Signal<Channel *> layoutRequested;
+    // This signal fires whenever views rendering a channel, or all views if the
+    // channel is a nullptr, need to invalidate their paint buffers
+    pajlada::Signals::Signal<Channel *> invalidateBuffersRequested;
 
     pajlada::Signals::NoArgSignal wordFlagsChanged;
-
-    // This signal fires every 100ms and can be used to trigger random things that require a recheck.
-    // It is currently being used by the "Tooltip Preview Image" system to recheck if an image is ready to be rendered.
-    pajlada::Signals::NoArgSignal miscUpdate;
 
     pajlada::Signals::Signal<Split *> selectSplit;
     pajlada::Signals::Signal<SplitContainer *> selectSplitContainer;
@@ -136,9 +168,9 @@ private:
     // Contains the full path to the window layout file, e.g. /home/pajlada/.local/share/Chatterino/Settings/window-layout.json
     const QString windowLayoutFilePath;
 
-    bool initialized_ = false;
+    bool shuttingDown_ = false;
 
-    QPoint emotePopupPos_;
+    QRect emotePopupBounds_;
 
     std::atomic<int> generation_{0};
 
@@ -149,10 +181,18 @@ private:
     Window *selectedWindow_{};
 
     MessageElementFlags wordFlags_{};
-    pajlada::SettingListener wordFlagsListener_;
 
     QTimer *saveTimer;
-    QTimer miscUpdateTimer_;
+
+    pajlada::Signals::SignalHolder signalHolder;
+
+    SignalListener updateWordTypeMaskListener;
+    SignalListener forceLayoutChannelViewsListener;
+    SignalListener layoutChannelViewsListener;
+    SignalListener invalidateChannelViewBuffersListener;
+    SignalListener repaintVisibleChatWidgetsListener;
+
+    friend class Window;  // this is for selectedWindow_
 };
 
 }  // namespace chatterino

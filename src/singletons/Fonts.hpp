@@ -1,22 +1,20 @@
 #pragma once
 
-#include "common/ChatterinoSetting.hpp"
-#include "common/Singleton.hpp"
+#include "pajlada/settings/settinglistener.hpp"
 
-#include <boost/noncopyable.hpp>
 #include <pajlada/signals/signal.hpp>
 #include <QFont>
-#include <QFontDatabase>
 #include <QFontMetrics>
 
-#include <array>
 #include <unordered_map>
+#include <vector>
 
 namespace chatterino {
 
 class Settings;
 class Paths;
 
+/** @exposeenum c2.FontStyle */
 enum class FontStyle : uint8_t {
     Tiny,
     ChatSmall,
@@ -26,6 +24,8 @@ enum class FontStyle : uint8_t {
     ChatMediumItalic,
     ChatLarge,
     ChatVeryLarge,
+
+    TimestampMedium,
 
     UiMedium,
     UiMediumBold,
@@ -39,23 +39,17 @@ enum class FontStyle : uint8_t {
     ChatEnd = ChatVeryLarge,
 };
 
-class Fonts final : public Singleton
+class Fonts final
 {
 public:
-    Fonts();
-
-    virtual void initialize(Settings &settings, Paths &paths) override;
+    explicit Fonts(Settings &settings);
 
     // font data gets set in createFontData(...)
 
     QFont getFont(FontStyle type, float scale);
-    QFontMetrics getFontMetrics(FontStyle type, float scale);
-
-    QStringSetting chatFontFamily;
-    IntSetting chatFontSize;
+    QFontMetricsF getFontMetrics(FontStyle type, float scale);
 
     pajlada::Signals::NoArgSignal fontChanged;
-    static Fonts *instance;
 
 private:
     struct FontData {
@@ -66,28 +60,27 @@ private:
         }
 
         const QFont font;
-        const QFontMetrics metrics;
+        const QFontMetricsF metrics;
     };
 
     struct ChatFontData {
         float scale;
         bool italic;
-        QFont::Weight weight;
     };
 
     struct UiFontData {
         float size;
         const char *name;
         bool italic;
-        QFont::Weight weight;
+        int weight;
     };
 
     FontData &getOrCreateFontData(FontStyle type, float scale);
-    FontData createFontData(FontStyle type, float scale);
+    static FontData createFontData(FontStyle type, float scale);
 
     std::vector<std::unordered_map<float, FontData>> fontsByType_;
-};
 
-Fonts *getFonts();
+    pajlada::SettingListener fontChangedListener;
+};
 
 }  // namespace chatterino

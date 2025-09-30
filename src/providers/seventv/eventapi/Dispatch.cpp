@@ -1,12 +1,15 @@
 #include "providers/seventv/eventapi/Dispatch.hpp"
 
+#include "util/QMagicEnum.hpp"
+
+#include <QJsonArray>
+
 #include <utility>
 
 namespace chatterino::seventv::eventapi {
 
 Dispatch::Dispatch(QJsonObject obj)
-    : type(magic_enum::enum_cast<SubscriptionType>(
-               obj["type"].toString().toStdString())
+    : type(qmagicenum::enumCast<SubscriptionType>(obj["type"].toString())
                .value_or(SubscriptionType::INVALID))
     , body(obj["body"].toObject())
     , id(this->body["id"].toString())
@@ -89,6 +92,46 @@ bool UserConnectionUpdateDispatch::validate() const
 {
     return !this->userID.isEmpty() && !this->oldEmoteSetID.isEmpty() &&
            !this->emoteSetID.isEmpty();
+}
+
+CosmeticCreateDispatch::CosmeticCreateDispatch(const Dispatch &dispatch)
+    : data(dispatch.body["object"]["data"].toObject())
+    , kind(qmagicenum::enumCast<CosmeticKind>(
+               dispatch.body["object"]["kind"].toString())
+               .value_or(CosmeticKind::INVALID))
+{
+}
+
+bool CosmeticCreateDispatch::validate() const
+{
+    return !this->data.empty() && this->kind != CosmeticKind::INVALID;
+}
+
+EntitlementCreateDeleteDispatch::EntitlementCreateDeleteDispatch(
+    const Dispatch &dispatch)
+{
+    const auto obj = dispatch.body["object"].toObject();
+    this->refID = obj["ref_id"].toString();
+    this->kind = qmagicenum::enumCast<CosmeticKind>(obj["kind"].toString())
+                     .value_or(CosmeticKind::INVALID);
+
+    const auto userConnections = obj["user"]["connections"].toArray();
+    for (const auto &connectionJson : userConnections)
+    {
+        const auto connection = connectionJson.toObject();
+        if (connection["platform"].toString() == "TWITCH")
+        {
+            this->userID = connection["id"].toString();
+            this->userName = connection["username"].toString();
+            break;
+        }
+    }
+}
+
+bool EntitlementCreateDeleteDispatch::validate() const
+{
+    return !this->userID.isEmpty() && !this->userName.isEmpty() &&
+           !this->refID.isEmpty() && this->kind != CosmeticKind::INVALID;
 }
 
 }  // namespace chatterino::seventv::eventapi

@@ -1,4 +1,4 @@
-#include "ModerationPage.hpp"
+#include "widgets/settingspages/ModerationPage.hpp"
 
 #include "Application.hpp"
 #include "controllers/logging/ChannelLoggingModel.hpp"
@@ -9,12 +9,17 @@
 #include "singletons/Settings.hpp"
 #include "util/Helpers.hpp"
 #include "util/LayoutCreator.hpp"
+#include "util/LoadPixmap.hpp"
+#include "util/PostToThread.hpp"
 #include "widgets/helper/EditableModelView.hpp"
+#include "widgets/helper/IconDelegate.hpp"
+#include "widgets/settingspages/SettingWidget.hpp"
 
 #include <QFileDialog>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
+#include <QPixmap>
 #include <QPushButton>
 #include <QTableView>
 #include <QtConcurrent/QtConcurrent>
@@ -43,7 +48,9 @@ QString formatSize(qint64 size)
     for (i = 0; i < units.size() - 1; i++)
     {
         if (outputSize < 1024)
+        {
             break;
+        }
         outputSize = outputSize / 1024;
     }
     return QString("%0 %1").arg(outputSize, 0, 'f', 2).arg(units[i]);
@@ -52,7 +59,7 @@ QString formatSize(qint64 size)
 QString fetchLogDirectorySize()
 {
     QString logsDirectoryPath = getSettings()->logPath.getValue().isEmpty()
-                                    ? getPaths()->messageLogDirectory
+                                    ? getApp()->getPaths().messageLogDirectory
                                     : getSettings()->logPath;
 
     auto logsSize = dirSize(logsDirectoryPath);
@@ -77,19 +84,20 @@ ModerationPage::ModerationPage()
         auto logsPathLabel = logs.emplace<QLabel>();
 
         // Logs (copied from LoggingMananger)
-        getSettings()->logPath.connect([logsPathLabel](const QString &logPath,
-                                                       auto) mutable {
-            QString pathOriginal =
-                logPath.isEmpty() ? getPaths()->messageLogDirectory : logPath;
+        getSettings()->logPath.connect(
+            [logsPathLabel](const QString &logPath, auto) mutable {
+                QString pathOriginal =
+                    logPath.isEmpty() ? getApp()->getPaths().messageLogDirectory
+                                      : logPath;
 
-            QString pathShortened =
-                "Logs are saved at <a href=\"file:///" + pathOriginal +
-                "\"><span style=\"color: white;\">" +
-                shortenString(pathOriginal, 50) + "</span></a>";
+                QString pathShortened =
+                    "Logs are saved at <a href=\"file:///" + pathOriginal +
+                    R"("><span style="color: white;">)" +
+                    shortenString(pathOriginal, 50) + "</span></a>";
 
-            logsPathLabel->setText(pathShortened);
-            logsPathLabel->setToolTip(pathOriginal);
-        });
+                logsPathLabel->setText(pathShortened);
+                logsPathLabel->setToolTip(pathOriginal);
+            });
 
         logsPathLabel->setTextFormat(Qt::RichText);
         logsPathLabel->setTextInteractionFlags(Qt::TextBrowserInteraction |
@@ -143,6 +151,33 @@ ModerationPage::ModerationPage()
                                            }).result());
             });
 
+        auto logsTimestampFormatLayout =
+            logs.emplace<QHBoxLayout>().withoutMargin();
+        auto logsTimestampFormatLabel =
+            logsTimestampFormatLayout.emplace<QLabel>();
+        logsTimestampFormatLabel->setText(
+            QString("Log file timestamp format: "));
+
+        QComboBox *logTimestampFormat = this->createComboBox(
+            {"Disable", "h:mm", "hh:mm", "h:mm a", "hh:mm a", "h:mm:ss",
+             "hh:mm:ss", "h:mm:ss a", "hh:mm:ss a", "h:mm:ss.zzz",
+             "h:mm:ss.zzz a", "hh:mm:ss.zzz", "hh:mm:ss.zzz a"},
+            getSettings()->logTimestampFormat);
+        logTimestampFormat->setToolTip("a = am/pm, zzz = milliseconds");
+        logsTimestampFormatLayout.append(logTimestampFormat);
+
+        SettingWidget::checkbox("Use Twitch's timestamps",
+                                getSettings()->tryUseTwitchTimestamps)
+            ->setTooltip(
+                "Try to use Twitch's timestamp (the time when the message was "
+                "received by Twitch's chat server), rather than your "
+                "computer's local timestamp.\nNote that using this setting can "
+                "result in out-of-order timestamps in the log files, and that "
+                "if Twitch's timestamp was unavailable for a message, it will "
+                "fall back to your computer's local timestamp.")
+            ->conditionallyEnabledBy(getSettings()->enableLogging)
+            ->addToLayout(logs->layout());
+
         QCheckBox *onlyLogListedChannels =
             this->createCheckBox("Only log channels listed below",
                                  getSettings()->onlyLogListedChannels);
@@ -150,11 +185,21 @@ ModerationPage::ModerationPage()
         onlyLogListedChannels->setEnabled(getSettings()->enableLogging);
         logs.append(onlyLogListedChannels);
 
+        auto *separatelyStoreStreamLogs =
+            this->createCheckBox("Store live stream logs as separate files",
+                                 getSettings()->separatelyStoreStreamLogs);
+
+        separatelyStoreStreamLogs->setEnabled(getSettings()->enableLogging);
+        logs.append(separatelyStoreStreamLogs);
+
         // Select event
         QObject::connect(
             enableLogging, &QCheckBox::stateChanged, this,
-            [enableLogging, onlyLogListedChannels]() mutable {
+            [enableLogging, onlyLogListedChannels,
+             separatelyStoreStreamLogs]() mutable {
                 onlyLogListedChannels->setEnabled(enableLogging->isChecked());
+                separatelyStoreStreamLogs->setEnabled(
+                    getSettings()->enableLogging);
             });
 
         EditableModelView *view =
@@ -169,7 +214,8 @@ ModerationPage::ModerationPage()
         view->getTableView()->horizontalHeader()->setSectionResizeMode(
             0, QHeaderView::Stretch);
 
-        view->addButtonPressed.connect([] {
+        // We can safely ignore this signal connection since we own the view
+        std::ignore = view->addButtonPressed.connect([] {
             getSettings()->loggedChannels.append(ChannelLog("channel"));
         });
 
@@ -179,7 +225,7 @@ ModerationPage::ModerationPage()
     {
         // clang-format off
         auto label = modMode.emplace<QLabel>(
-            "Moderation mode is enabled by clicking <img width='18' height='18' src=':/buttons/modModeDisabled.png'> in a channel that you moderate.<br><br>"
+            "Moderation mode is enabled by clicking <img width='18' height='18' src=':/buttons/moderationDisabledDarkMode18x18.png'> in a channel that you moderate.<br><br>"
             "Moderation buttons can be bound to chat commands such as \"/ban {user.name}\", \"/timeout {user.name} 1000\", \"/w someusername !report {user.name} was bad in channel {channel.name}\" or any other custom text commands.<br>"
             "For deleting messages use /delete {msg.id}.<br><br>"
             "More information can be found <a href='https://wiki.chatterino.com/Moderation/#moderation-mode'>here</a>.");
@@ -203,29 +249,69 @@ ModerationPage::ModerationPage()
                         ->initialized(&getSettings()->moderationActions))
                 .getElement();
 
-        view->setTitles({"Actions"});
+        view->setTitles({"Action", "Icon"});
         view->getTableView()->horizontalHeader()->setSectionResizeMode(
             QHeaderView::Fixed);
         view->getTableView()->horizontalHeader()->setSectionResizeMode(
             0, QHeaderView::Stretch);
+        view->getTableView()->setItemDelegateForColumn(
+            ModerationActionModel::Column::Icon, new IconDelegate(view));
+        QObject::connect(
+            view->getTableView(), &QTableView::clicked,
+            [this, view](const QModelIndex &clicked) {
+                if (clicked.column() == ModerationActionModel::Column::Icon)
+                {
+                    auto fileUrl = QFileDialog::getOpenFileUrl(
+                        this, "Open Image", QUrl(),
+                        "Image Files (*.png *.jpg *.jpeg)");
+                    view->getModel()->setData(clicked, fileUrl, Qt::UserRole);
+                    view->getModel()->setData(clicked, fileUrl.fileName(),
+                                              Qt::DisplayRole);
+                    // Clear the icon if the user canceled the dialog
+                    if (fileUrl.isEmpty())
+                    {
+                        view->getModel()->setData(clicked, QVariant(),
+                                                  Qt::DecorationRole);
+                    }
+                    else
+                    {
+                        // QPointer will be cleared when view is destroyed
+                        QPointer<EditableModelView> viewtemp = view;
 
-        view->addButtonPressed.connect([] {
+                        loadPixmapFromUrl(
+                            {fileUrl.toString()},
+                            [clicked, view = viewtemp](const QPixmap &pixmap) {
+                                postToThread([clicked, view, pixmap]() {
+                                    if (view.isNull())
+                                    {
+                                        return;
+                                    }
+
+                                    view->getModel()->setData(
+                                        clicked, pixmap, Qt::DecorationRole);
+                                });
+                            });
+                    }
+                }
+            });
+
+        // We can safely ignore this signal connection since we own the view
+        std::ignore = view->addButtonPressed.connect([] {
             getSettings()->moderationActions.append(
                 ModerationAction("/timeout {user.name} 300"));
         });
     }
 
-    this->addModerationButtonSettings(tabs);
+    this->addModerationButtonSettings(tabs.getElement());
 
     // ---- misc
     this->itemsChangedTimer_.setSingleShot(true);
 }
 
-void ModerationPage::addModerationButtonSettings(
-    LayoutCreator<QTabWidget> &tabs)
+void ModerationPage::addModerationButtonSettings(QTabWidget *tabs)
 {
     auto timeoutLayout =
-        tabs.appendTab(new QVBoxLayout, "User Timeout Buttons");
+        LayoutCreator{tabs}.appendTab(new QVBoxLayout, "User Timeout Buttons");
     auto texts = timeoutLayout.emplace<QVBoxLayout>().withoutMargin();
     {
         auto infoLabel = texts.emplace<QLabel>();
@@ -246,7 +332,7 @@ void ModerationPage::addModerationButtonSettings(
     const auto valueChanged = [=, this] {
         const auto index = QObject::sender()->objectName().toInt();
 
-        const auto line = this->durationInputs_[index];
+        auto *const line = this->durationInputs_[index];
         const auto duration = line->text().toInt();
         const auto unit = this->unitInputs_[index]->currentText();
 
