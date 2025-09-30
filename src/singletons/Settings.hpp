@@ -443,7 +443,6 @@ public:
     };
     EnumSetting<Qt::KeyboardModifier> modButtonRequiredModifier = {
         "/moderation/modButtonRequiredModifier", Qt::NoModifier};
-    };
 
     /// Highlighting
     //    BoolSetting enableHighlights = {"/highlighting/enabled", true};
