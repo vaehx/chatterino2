@@ -19,6 +19,7 @@ class BttvLiveUpdates : public BasicPubSubManager<BttvLiveUpdateSubscription>
 
 public:
     BttvLiveUpdates(QString host);
+    ~BttvLiveUpdates() override;
 
     struct {
         Signal<BttvLiveUpdateEmoteUpdateAddMessage> emoteAdded;
@@ -31,9 +32,9 @@ public:
      * if it's not already joined.
      *
      * @param channelID the Twitch channel-id of the broadcaster.
-     * @param userName the Twitch username of the current user.
+     * @param userID the Twitch user-id of the current user.
      */
-    void joinChannel(const QString &channelID, const QString &userName);
+    void joinChannel(const QString &channelID, const QString &userID);
 
     /**
      * Parts a twitch channel by its id (without any prefix like 'twitch:')

@@ -1,4 +1,4 @@
-#include "SearchPopup.hpp"
+#include "widgets/helper/SearchPopup.hpp"
 
 #include "Application.hpp"
 #include "common/Channel.hpp"
@@ -13,6 +13,8 @@
 #include "messages/search/RegexPredicate.hpp"
 #include "messages/search/SubstringPredicate.hpp"
 #include "messages/search/SubtierPredicate.hpp"
+#include "singletons/Settings.hpp"
+#include "singletons/Theme.hpp"
 #include "singletons/WindowManager.hpp"
 #include "widgets/helper/ChannelView.hpp"
 #include "widgets/splits/Split.hpp"
@@ -51,10 +53,10 @@ ChannelPtr SearchPopup::filter(const QString &text, const QString &channelName,
         // If all predicates match, add the message to the channel
         if (accept)
         {
-            auto overrideFlags = boost::optional<MessageFlags>(message->flags);
+            auto overrideFlags = std::optional<MessageFlags>(message->flags);
             overrideFlags->set(MessageFlag::DoNotLog);
 
-            channel->addMessage(message, overrideFlags);
+            channel->addMessage(message, MessageContext::Repost, overrideFlags);
         }
     }
 
@@ -62,7 +64,12 @@ ChannelPtr SearchPopup::filter(const QString &text, const QString &channelName,
 }
 
 SearchPopup::SearchPopup(QWidget *parent, Split *split)
-    : BasePopup({BaseWindow::DisableLayoutSave}, parent)
+    : BasePopup(
+          {
+              BaseWindow::DisableLayoutSave,
+              BaseWindow::BoundsCheckOnShow,
+          },
+          parent)
     , split_(split)
 {
     this->initLayout();
@@ -74,6 +81,8 @@ SearchPopup::SearchPopup(QWidget *parent, Split *split)
     }
     this->resize(400, 600);
     this->addShortcuts();
+
+    this->themeChangedEvent();
 }
 
 void SearchPopup::addShortcuts()
@@ -97,7 +106,7 @@ void SearchPopup::addShortcuts()
         {"scrollPage", nullptr},
     };
 
-    this->shortcuts_ = getApp()->hotkeys->shortcutsForCategory(
+    this->shortcuts_ = getApp()->getHotkeys()->shortcutsForCategory(
         HotkeyCategory::PopupWindow, actions, this);
 }
 
@@ -128,9 +137,11 @@ void SearchPopup::goToMessage(const MessagePtr &message)
 {
     for (const auto &view : this->searchChannels_)
     {
-        if (view.get().channel()->getType() == Channel::Type::TwitchMentions)
+        const auto type = view.get().channel()->getType();
+        if (type == Channel::Type::TwitchMentions ||
+            type == Channel::Type::TwitchAutomod)
         {
-            getApp()->windows->scrollToMessage(message);
+            getApp()->getWindows()->scrollToMessage(message);
             return;
         }
 
@@ -160,6 +171,10 @@ void SearchPopup::updateWindowTitle()
     {
         historyName = "multiple channels'";
     }
+    else if (this->channelName_ == "/automod")
+    {
+        historyName = "automod";
+    }
     else if (this->channelName_ == "/mentions")
     {
         historyName = "mentions";
@@ -179,9 +194,32 @@ void SearchPopup::updateWindowTitle()
     this->setWindowTitle("Searching in " + historyName + " history");
 }
 
-void SearchPopup::showEvent(QShowEvent *)
+void SearchPopup::showEvent(QShowEvent *e)
 {
     this->search();
+    BaseWindow::showEvent(e);
+}
+
+bool SearchPopup::eventFilter(QObject *object, QEvent *event)
+{
+    if (object == this->searchInput_ && event->type() == QEvent::KeyPress)
+    {
+        QKeyEvent *keyEvent = static_cast<QKeyEvent *>(event);
+        if (keyEvent == QKeySequence::DeleteStartOfWord &&
+            this->searchInput_->selectionLength() > 0)
+        {
+            this->searchInput_->backspace();
+            return true;
+        }
+    }
+    return false;
+}
+
+void SearchPopup::themeChangedEvent()
+{
+    BasePopup::themeChangedEvent();
+
+    this->setPalette(getTheme()->palette);
 }
 
 void SearchPopup::search()
@@ -213,10 +251,8 @@ LimitedQueueSnapshot<MessagePtr> SearchPopup::buildSnapshot()
         const LimitedQueueSnapshot<MessagePtr> &snapshot =
             sharedView.channel()->getMessageSnapshot();
 
-        // TODO: implement iterator on LimitedQueueSnapshot?
-        for (auto i = 0; i < snapshot.size(); ++i)
+        for (const auto &message : snapshot)
         {
-            const MessagePtr &message = snapshot[i];
             if (filterSet && !filterSet->filter(message, sharedView.channel()))
             {
                 continue;
@@ -263,7 +299,7 @@ void SearchPopup::initLayout()
 
         // HBOX
         {
-            auto *layout2 = new QHBoxLayout(this);
+            auto *layout2 = new QHBoxLayout();
             layout2->setContentsMargins(8, 8, 8, 8);
             layout2->setSpacing(8);
 
@@ -278,6 +314,7 @@ void SearchPopup::initLayout()
                     QPixmap(":/buttons/clearSearch.png"));
                 QObject::connect(this->searchInput_, &QLineEdit::textChanged,
                                  this, &SearchPopup::search);
+                this->searchInput_->installEventFilter(this);
             }
 
             layout1->addLayout(layout2);
@@ -285,8 +322,9 @@ void SearchPopup::initLayout()
 
         // CHANNELVIEW
         {
-            this->channelView_ = new ChannelView(this, this->split_,
-                                                 ChannelView::Context::Search);
+            this->channelView_ = new ChannelView(
+                this, this->split_, ChannelView::Context::Search,
+                getSettings()->scrollbackSplitLimit);
 
             layout1->addWidget(this->channelView_);
         }

@@ -2,12 +2,13 @@
 
 #include "common/Aliases.hpp"
 #include "common/Channel.hpp"
-#include "common/NullablePtr.hpp"
 #include "widgets/BaseWidget.hpp"
+#include "widgets/splits/SplitCommon.hpp"
 
 #include <boost/signals2.hpp>
 #include <pajlada/signals/signalholder.hpp>
 #include <QFont>
+#include <QPointer>
 #include <QShortcut>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -15,12 +16,12 @@
 namespace chatterino {
 
 class ChannelView;
-class MessageThread;
 class SplitHeader;
 class SplitInput;
 class SplitContainer;
 class SplitOverlay;
 class SelectChannelDialog;
+class OverlayWindow;
 
 // Each ChatWidget consists of three sub-elements that handle their own part of
 // the chat widget: ChatWidgetHeader
@@ -56,7 +57,7 @@ public:
     void setChannel(IndirectChannel newChannel);
 
     void setFilters(const QList<QUuid> ids);
-    const QList<QUuid> getFilters() const;
+    QList<QUuid> getFilters() const;
 
     void setModerationMode(bool value);
     bool getModerationMode() const;
@@ -75,7 +76,12 @@ public:
 
     void setContainer(SplitContainer *container);
 
-    void setInputReply(const std::shared_ptr<MessageThread> &reply);
+    void setInputReply(const MessagePtr &reply);
+
+    // This is called on window focus lost
+    void unpause();
+
+    OverlayWindow *overlayWindow();
 
     static pajlada::Signals::Signal<Qt::KeyboardModifiers>
         modifierStatusChanged;
@@ -96,8 +102,7 @@ public:
     pajlada::Signals::Signal<Action> actionRequested;
     pajlada::Signals::Signal<ChannelPtr> openSplitRequested;
 
-    // args: (SplitContainer::Direction dir, Split* parent)
-    pajlada::Signals::Signal<int, Split *> insertSplitRequested;
+    pajlada::Signals::Signal<SplitDirection, Split *> insertSplitRequested;
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -105,11 +110,7 @@ protected:
     void keyPressEvent(QKeyEvent *event) override;
     void keyReleaseEvent(QKeyEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
     void enterEvent(QEnterEvent * /*event*/) override;
-#else
-    void enterEvent(QEvent * /*event*/) override;
-#endif
     void leaveEvent(QEvent *event) override;
 
     void dragEnterEvent(QDragEnterEvent *event) override;
@@ -122,17 +123,21 @@ private:
     void addShortcuts() override;
 
     /**
-     * @brief Opens Twitch channel stream in a browser player (opens a formatted link)
+     * @brief Opens a Twitch channel's stream in your default browser's player (opens a formatted link)
      */
     void openChannelInBrowserPlayer(ChannelPtr channel);
     /**
-     * @brief Opens Twitch channel stream in streamlink app (if stream is live and streamlink is installed)
+     * @brief Opens a Twitch channel's stream in streamlink (if the stream's live, and streamlink's installed)
      */
-    void openChannelInStreamlink(QString channelName);
+    void openChannelInStreamlink(const QString channelName);
     /**
-     * @brief Opens Twitch channel chat in a new Chatterino tab
+     * @brief Opens a Twitch channel's stream in your custom player (if the stream's live, and the custom player protocol's set)
      */
-    void joinChannelInNewTab(ChannelPtr channel);
+    void openChannelInCustomPlayer(QString channelName);
+    /**
+     * @brief Opens a Twitch channel's chat in a new tab
+     */
+    void joinChannelInNewTab(const ChannelPtr &channel);
 
     /**
      * @brief Refresh moderation mode layouts/buttons
@@ -156,23 +161,30 @@ private:
     SplitInput *const input_;
     SplitOverlay *const overlay_;
 
-    NullablePtr<SelectChannelDialog> selectChannelDialog_;
+    QPointer<OverlayWindow> overlayWindow_;
+
+    QPointer<SelectChannelDialog> selectChannelDialog_;
 
     pajlada::Signals::Connection channelIDChangedConnection_;
     pajlada::Signals::Connection usermodeChangedConnection_;
     pajlada::Signals::Connection roomModeChangedConnection_;
 
     pajlada::Signals::Connection indirectChannelChangedConnection_;
+
+    // This signal-holder is cleared whenever this split changes the underlying channel
+    pajlada::Signals::SignalHolder channelSignalHolder_;
+
     pajlada::Signals::SignalHolder signalHolder_;
     std::vector<boost::signals2::scoped_connection> bSignals_;
 
-public slots:
+public Q_SLOTS:
     void addSibling();
     void deleteFromContainer();
     void changeChannel();
     void explainMoving();
     void explainSplitting();
     void popup();
+    void showOverlayWindow();
     void clear();
     void openInBrowser();
     void openModViewInBrowser();
@@ -180,10 +192,9 @@ public slots:
     void openBrowserPlayer();
     void openInStreamlink();
     void openWithCustomScheme();
-    void startWatching();
     void setFiltersDialog();
     void showSearch(bool singleChannel);
-    void showViewerList();
+    void openChatterList();
     void openSubPage();
     void reloadChannelAndSubscriberEmotes();
     void reconnect();

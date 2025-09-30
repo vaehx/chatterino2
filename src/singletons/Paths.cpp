@@ -15,12 +15,8 @@ using namespace std::literals;
 
 namespace chatterino {
 
-Paths *Paths::instance = nullptr;
-
 Paths::Paths()
 {
-    this->instance = this;
-
     this->initAppFilePathHash();
 
     this->initCheckPortable();
@@ -33,17 +29,17 @@ bool Paths::createFolder(const QString &folderPath)
     return QDir().mkpath(folderPath);
 }
 
-bool Paths::isPortable()
+bool Paths::isPortable() const
 {
     return Modes::instance().isPortable;
 }
 
-QString Paths::cacheDirectory()
+QString Paths::cacheDirectory() const
 {
     static const auto pathSetting = [] {
         QStringSetting cachePathSetting("/cache/path");
 
-        cachePathSetting.connect([](const auto &newPath, auto) {
+        cachePathSetting.connect([](const auto &newPath) {
             if (!newPath.isEmpty())
             {
                 QDir().mkpath(newPath);
@@ -61,6 +57,11 @@ QString Paths::cacheDirectory()
     }
 
     return path;
+}
+
+QString Paths::cacheFilePath(const QString &fileName) const
+{
+    return combinePath(this->cacheDirectory(), fileName);
 }
 
 void Paths::initAppFilePathHash()
@@ -83,14 +84,14 @@ void Paths::initCheckPortable()
 
 void Paths::initRootDirectory()
 {
-    assert(this->portable_.is_initialized());
+    assert(this->portable_.has_value());
 
     // Root path = %APPDATA%/Chatterino or the folder that the executable
     // resides in
 
     this->rootAppDataDirectory = [&]() -> QString {
         // portable
-        if (this->isPortable())
+        if (Modes::instance().isPortable)
         {
             return QCoreApplication::applicationDirPath();
         }
@@ -122,9 +123,8 @@ void Paths::initSubDirectories()
 
     // create settings subdirectories and validate that they are created
     // properly
-    auto makePath = [&](const std::string &name) -> QString {
-        auto path = combinePath(this->rootAppDataDirectory,
-                                QString::fromStdString(name));
+    auto makePath = [&](const QString &name) -> QString {
+        auto path = combinePath(this->rootAppDataDirectory, name);
 
         if (!QDir().mkpath(path))
         {
@@ -140,14 +140,18 @@ void Paths::initSubDirectories()
     this->cacheDirectory_ = makePath("Cache");
     this->messageLogDirectory = makePath("Logs");
     this->miscDirectory = makePath("Misc");
-    this->twitchProfileAvatars = makePath("ProfileAvatars");
+    this->twitchProfileAvatars =
+        makePath(combinePath("ProfileAvatars", "twitch"));
+    this->pluginsDirectory = makePath("Plugins");
+    this->themesDirectory = makePath("Themes");
     this->crashdumpDirectory = makePath("Crashes");
-    //QDir().mkdir(this->twitchProfileAvatars + "/twitch");
-}
-
-Paths *getPaths()
-{
-    return Paths::instance;
+#ifdef Q_OS_WIN
+    this->ipcDirectory = makePath("IPC");
+#else
+    // NOTE: We do *NOT* use IPC on non-Windows platforms.
+    // If we start, we should re-consider this directory.
+    this->ipcDirectory = "/tmp";
+#endif
 }
 
 }  // namespace chatterino

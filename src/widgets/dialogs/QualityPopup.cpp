@@ -1,4 +1,4 @@
-#include "QualityPopup.hpp"
+#include "widgets/dialogs/QualityPopup.hpp"
 
 #include "Application.hpp"
 #include "common/QLogging.hpp"
@@ -9,8 +9,12 @@
 namespace chatterino {
 
 QualityPopup::QualityPopup(const QString &channelURL, QStringList options)
-    : BasePopup({BaseWindow::DisableLayoutSave},
-                static_cast<QWidget *>(&(getApp()->windows->getMainWindow())))
+    : BasePopup(
+          {
+              BaseWindow::DisableLayoutSave,
+              BaseWindow::BoundsCheckOnShow,
+          },
+          static_cast<QWidget *>(&(getApp()->getWindows()->getMainWindow())))
     , channelURL_(channelURL)
 {
     this->ui_.selector = new QComboBox(this);

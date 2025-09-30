@@ -1,5 +1,6 @@
 #pragma once
 
+#include "util/QStringHash.hpp"
 #include "util/RapidjsonHelpers.hpp"
 
 #include <pajlada/serialize.hpp>
@@ -11,11 +12,19 @@
 namespace chatterino {
 
 struct HelixBlock;
+struct HelixUser;
 
 struct TwitchUser {
+    /// The Twitch User ID (e.g. `117166826`)
     QString id;
+
+    /// The Twitch User Login (e.g. `testaccount_420`)
     mutable QString name;
+
+    // The Twitch User Display Name (e.g. `테스트계정420`)
     mutable QString displayName;
+
+    mutable QString profilePictureUrl;
 
     void update(const TwitchUser &other) const
     {
@@ -23,13 +32,26 @@ struct TwitchUser {
 
         this->name = other.name;
         this->displayName = other.displayName;
+        this->profilePictureUrl = other.profilePictureUrl;
     }
+
+    void update(const HelixUser &user) const;
 
     void fromHelixBlock(const HelixBlock &ignore);
 
     bool operator<(const TwitchUser &rhs) const
     {
         return this->id < rhs.id;
+    }
+
+    bool operator==(const TwitchUser &rhs) const
+    {
+        return this->id == rhs.id;
+    }
+
+    bool operator!=(const TwitchUser &rhs) const
+    {
+        return !(*this == rhs);
     }
 };
 
@@ -75,3 +97,11 @@ struct Deserialize<chatterino::TwitchUser> {
 };
 
 }  // namespace pajlada
+
+template <>
+struct std::hash<chatterino::TwitchUser> {
+    inline size_t operator()(const chatterino::TwitchUser &user) const noexcept
+    {
+        return std::hash<QString>{}(user.id);
+    }
+};

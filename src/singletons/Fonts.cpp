@@ -8,84 +8,193 @@
 #include <QDebug>
 #include <QtGlobal>
 
-#ifdef Q_OS_WIN32
-#    define DEFAULT_FONT_FAMILY "Segoe UI"
-#    define DEFAULT_FONT_SIZE 10
-#else
-#    ifdef Q_OS_MACOS
-#        define DEFAULT_FONT_FAMILY "Helvetica Neue"
-#        define DEFAULT_FONT_SIZE 12
-#    else
-#        define DEFAULT_FONT_FAMILY "Arial"
-#        define DEFAULT_FONT_SIZE 11
-#    endif
-#endif
-
-namespace chatterino {
 namespace {
-    int getBoldness()
-    {
-#ifdef CHATTERINO
-        return getSettings()->boldScale.getValue();
-#else
-        return QFont::Bold;
-#endif
-    }
-}  // namespace
 
-Fonts *Fonts::instance = nullptr;
+using namespace chatterino;
 
-Fonts::Fonts()
-    : chatFontFamily("/appearance/currentFontFamily", DEFAULT_FONT_FAMILY)
-    , chatFontSize("/appearance/currentFontSize", DEFAULT_FONT_SIZE)
+int getUsernameBoldness()
 {
-    Fonts::instance = this;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    // From qfont.cpp
+    // https://github.com/qt/qtbase/blob/589c6d066f84833a7c3dda1638037f4b2e91b7aa/src/gui/text/qfont.cpp#L143-L169
+    static constexpr std::array<std::array<int, 2>, 9> legacyToOpenTypeMap{{
+        {0, QFont::Thin},
+        {12, QFont::ExtraLight},
+        {25, QFont::Light},
+        {50, QFont::Normal},
+        {57, QFont::Medium},
+        {63, QFont::DemiBold},
+        {75, QFont::Bold},
+        {81, QFont::ExtraBold},
+        {87, QFont::Black},
+    }};
 
-    this->fontsByType_.resize(size_t(FontStyle::EndType));
+    const int target = getSettings()->boldScale.getValue();
+
+    int result = QFont::Medium;
+    int closestDist = INT_MAX;
+
+    // Go through and find the closest mapped value
+    for (const auto [weightOld, weightNew] : legacyToOpenTypeMap)
+    {
+        const int dist = qAbs(weightOld - target);
+        if (dist < closestDist)
+        {
+            result = weightNew;
+            closestDist = dist;
+        }
+        else
+        {
+            // Break early since following values will be further away
+            break;
+        }
+    }
+
+    return result;
+#else
+    return getSettings()->boldScale.getValue();
+#endif
 }
 
-void Fonts::initialize(Settings &, Paths &)
+float fontSize(FontStyle style)
 {
-    this->chatFontFamily.connect(
-        [this]() {
-            assertInGuiThread();
+    auto chatSize = [] {
+        return static_cast<float>(getSettings()->chatFontSize);
+    };
+    switch (style)
+    {
+        case FontStyle::ChatSmall:
+            return 0.6F * chatSize();
+        case FontStyle::ChatMediumSmall:
+            return 0.8F * chatSize();
+        case FontStyle::ChatMedium:
+        case FontStyle::ChatMediumBold:
+        case FontStyle::ChatMediumItalic:
+        case FontStyle::TimestampMedium:
+            return chatSize();
+        case FontStyle::ChatLarge:
+            return 1.2F * chatSize();
+        case FontStyle::ChatVeryLarge:
+            return 1.4F * chatSize();
 
-            for (auto &map : this->fontsByType_)
-            {
-                map.clear();
-            }
-            this->fontChanged.invoke();
-        },
-        false);
+        case FontStyle::Tiny:
+            return 8;
+        case FontStyle::UiMedium:
+        case FontStyle::UiMediumBold:
+        case FontStyle::UiTabs:
+        case FontStyle::EndType:
+            return 9;
+    }
 
-    this->chatFontSize.connect(
-        [this]() {
-            assertInGuiThread();
+    assert(false);
+    return 9;
+}
 
-            for (auto &map : this->fontsByType_)
-            {
-                map.clear();
-            }
-            this->fontChanged.invoke();
-        },
-        false);
+int fontWeight(FontStyle style)
+{
+    switch (style)
+    {
+        case FontStyle::ChatSmall:
+        case FontStyle::ChatMediumSmall:
+        case FontStyle::ChatMedium:
+        case FontStyle::ChatMediumItalic:
+        case FontStyle::ChatLarge:
+        case FontStyle::ChatVeryLarge:
+        case FontStyle::TimestampMedium:
+            return getSettings()->chatFontWeight.getValue();
 
-#ifdef CHATTERINO
-    getSettings()->boldScale.connect(
-        [this]() {
-            assertInGuiThread();
+        case FontStyle::ChatMediumBold:
+            return getUsernameBoldness();
 
-            // REMOVED
-            getApp()->windows->incGeneration();
+        case FontStyle::Tiny:
+        case FontStyle::UiMedium:
+        case FontStyle::UiTabs:
+        case FontStyle::EndType:
+            return QFont::Normal;
 
-            for (auto &map : this->fontsByType_)
-            {
-                map.clear();
-            }
-            this->fontChanged.invoke();
-        },
-        false);
-#endif
+        case FontStyle::UiMediumBold:
+            return QFont::Bold;
+    }
+
+    assert(false);
+    return QFont::Normal;
+}
+
+bool isItalic(FontStyle style)
+{
+    switch (style)
+    {
+        case FontStyle::Tiny:
+        case FontStyle::ChatSmall:
+        case FontStyle::ChatMediumSmall:
+        case FontStyle::ChatMedium:
+        case FontStyle::ChatMediumBold:
+        case FontStyle::ChatLarge:
+        case FontStyle::ChatVeryLarge:
+        case FontStyle::TimestampMedium:
+        case FontStyle::UiMedium:
+        case FontStyle::UiMediumBold:
+        case FontStyle::UiTabs:
+        case FontStyle::EndType:
+            return false;
+
+        case FontStyle::ChatMediumItalic:
+            return true;
+    }
+
+    assert(false);
+    return false;
+}
+
+QString fontFamily(FontStyle style)
+{
+    switch (style)
+    {
+        case FontStyle::Tiny:
+            return QStringLiteral("Monospace");
+
+        case FontStyle::ChatSmall:
+        case FontStyle::ChatMediumSmall:
+        case FontStyle::ChatMedium:
+        case FontStyle::ChatMediumBold:
+        case FontStyle::ChatMediumItalic:
+        case FontStyle::ChatLarge:
+        case FontStyle::ChatVeryLarge:
+        case FontStyle::TimestampMedium:
+            return getSettings()->chatFontFamily.getValue();
+
+        case FontStyle::UiMedium:
+        case FontStyle::UiMediumBold:
+        case FontStyle::UiTabs:
+        case FontStyle::EndType:
+            return QStringLiteral(DEFAULT_FONT_FAMILY);
+    }
+
+    assert(false);
+    return QStringLiteral(DEFAULT_FONT_FAMILY);
+}
+
+}  // namespace
+
+namespace chatterino {
+
+Fonts::Fonts(Settings &settings)
+{
+    this->fontsByType_.resize(size_t(FontStyle::EndType));
+
+    this->fontChangedListener.setCB([this] {
+        assertInGuiThread();
+
+        for (auto &map : this->fontsByType_)
+        {
+            map.clear();
+        }
+        this->fontChanged.invoke();
+    });
+    this->fontChangedListener.addSetting(settings.chatFontFamily);
+    this->fontChangedListener.addSetting(settings.chatFontSize);
+    this->fontChangedListener.addSetting(settings.chatFontWeight);
+    this->fontChangedListener.addSetting(settings.boldScale);
 }
 
 QFont Fonts::getFont(FontStyle type, float scale)
@@ -93,7 +202,7 @@ QFont Fonts::getFont(FontStyle type, float scale)
     return this->getOrCreateFontData(type, scale).font;
 }
 
-QFontMetrics Fonts::getFontMetrics(FontStyle type, float scale)
+QFontMetricsF Fonts::getFontMetrics(FontStyle type, float scale)
 {
     return this->getOrCreateFontData(type, scale).metrics;
 }
@@ -116,7 +225,7 @@ Fonts::FontData &Fonts::getOrCreateFontData(FontStyle type, float scale)
     }
 
     // emplace new element
-    auto result = map.emplace(scale, this->createFontData(type, scale));
+    auto result = map.emplace(scale, Fonts::createFontData(type, scale));
     assert(result.second);
 
     return result.first->second;
@@ -124,55 +233,27 @@ Fonts::FontData &Fonts::getOrCreateFontData(FontStyle type, float scale)
 
 Fonts::FontData Fonts::createFontData(FontStyle type, float scale)
 {
-    // check if it's a chat (scale the setting)
-    if (type >= FontStyle::ChatStart && type <= FontStyle::ChatEnd)
-    {
-        static std::unordered_map<FontStyle, ChatFontData> sizeScale{
-            {FontStyle::ChatSmall, {0.6f, false, QFont::Normal}},
-            {FontStyle::ChatMediumSmall, {0.8f, false, QFont::Normal}},
-            {FontStyle::ChatMedium, {1, false, QFont::Normal}},
-            {FontStyle::ChatMediumBold,
-             {1, false, QFont::Weight(getBoldness())}},
-            {FontStyle::ChatMediumItalic, {1, true, QFont::Normal}},
-            {FontStyle::ChatLarge, {1.2f, false, QFont::Normal}},
-            {FontStyle::ChatVeryLarge, {1.4f, false, QFont::Normal}},
-        };
-        sizeScale[FontStyle::ChatMediumBold] = {1, false,
-                                                QFont::Weight(getBoldness())};
-        auto data = sizeScale[type];
-        return FontData(
-            QFont(this->chatFontFamily.getValue(),
-                  int(this->chatFontSize.getValue() * data.scale * scale),
-                  data.weight, data.italic));
-    }
+    QFont font{
+        fontFamily(type),
+        static_cast<int>(fontSize(type) * scale),
+        fontWeight(type),
+        isItalic(type),
+    };
 
-    // normal Ui font (use pt size)
+    switch (type)
     {
-#ifdef Q_OS_MAC
-        constexpr float multiplier = 0.8f;
-#else
-        constexpr float multiplier = 1.f;
+        case FontStyle::TimestampMedium: {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
+            // Apply the OpenType feature `tnum` to timestamp fonts
+            // https://sparanoid.com/lab/opentype-features/#tnum
+            auto tag = QFont::Tag("tnum");
+            font.setFeature(tag, 1);
 #endif
-
-        static std::unordered_map<FontStyle, UiFontData> defaultSize{
-            {FontStyle::Tiny, {8, "Monospace", false, QFont::Normal}},
-            {FontStyle::UiMedium,
-             {int(9 * multiplier), DEFAULT_FONT_FAMILY, false, QFont::Normal}},
-            {FontStyle::UiMediumBold,
-             {int(9 * multiplier), DEFAULT_FONT_FAMILY, false, QFont::Bold}},
-            {FontStyle::UiTabs,
-             {int(9 * multiplier), DEFAULT_FONT_FAMILY, false, QFont::Normal}},
-        };
-
-        UiFontData &data = defaultSize[type];
-        QFont font(data.name, int(data.size * scale), data.weight, data.italic);
-        return FontData(font);
+        }
+        break;
     }
-}
 
-Fonts *getFonts()
-{
-    return Fonts::instance;
+    return font;
 }
 
 }  // namespace chatterino

@@ -1,4 +1,4 @@
-#include "SettingsPage.hpp"
+#include "widgets/settingspages/SettingsPage.hpp"
 
 #include "Application.hpp"
 #include "singletons/WindowManager.hpp"
@@ -21,36 +21,40 @@ bool filterItemsRec(QObject *object, const QString &query)
             widget->update();
         };
 
-        if (auto x = dynamic_cast<SCheckBox *>(child); x)
+        if (auto *checkBox = dynamic_cast<SCheckBox *>(child))
         {
-            setOpacity(x, x->text().contains(query, Qt::CaseInsensitive));
+            setOpacity(checkBox,
+                       checkBox->text().contains(query, Qt::CaseInsensitive));
         }
-        else if (auto x = dynamic_cast<SLabel *>(child); x)
+        else if (auto *lbl = dynamic_cast<SLabel *>(child))
         {
-            setOpacity(x, x->text().contains(query, Qt::CaseInsensitive));
+            setOpacity(lbl, lbl->text().contains(query, Qt::CaseInsensitive));
         }
-        else if (auto x = dynamic_cast<SComboBox *>(child); x)
+        else if (auto *comboBox = dynamic_cast<SComboBox *>(child))
         {
-            setOpacity(x, [=]() {
-                for (int i = 0; i < x->count(); i++)
+            setOpacity(comboBox, [=]() {
+                for (int i = 0; i < comboBox->count(); i++)
                 {
-                    if (x->itemText(i).contains(query, Qt::CaseInsensitive))
+                    if (comboBox->itemText(i).contains(query,
+                                                       Qt::CaseInsensitive))
+                    {
                         return true;
+                    }
                 }
                 return false;
             }());
         }
-        else if (auto x = dynamic_cast<QTabWidget *>(child); x)
+        else if (auto *tabs = dynamic_cast<QTabWidget *>(child))
         {
-            for (int i = 0; i < x->count(); i++)
+            for (int i = 0; i < tabs->count(); i++)
             {
                 bool tabAny{};
 
-                if (x->tabText(i).contains(query, Qt::CaseInsensitive))
+                if (tabs->tabText(i).contains(query, Qt::CaseInsensitive))
                 {
                     tabAny = true;
                 }
-                auto widget = x->widget(i);
+                auto *widget = tabs->widget(i);
                 tabAny |= filterItemsRec(widget, query);
 
                 any |= tabAny;
@@ -83,15 +87,12 @@ void SettingsPage::setTab(SettingsDialogTab *tab)
     this->tab_ = tab;
 }
 
-void SettingsPage::cancel()
-{
-    this->onCancel_.invoke();
-}
-
 QCheckBox *SettingsPage::createCheckBox(
-    const QString &text, pajlada::Settings::Setting<bool> &setting)
+    const QString &text, pajlada::Settings::Setting<bool> &setting,
+    const QString &toolTipText)
 {
     QCheckBox *checkbox = new SCheckBox(text);
+    checkbox->setToolTip(toolTipText);
 
     // update when setting changes
     setting.connect(
@@ -104,7 +105,7 @@ QCheckBox *SettingsPage::createCheckBox(
     QObject::connect(checkbox, &QCheckBox::toggled, this,
                      [&setting](bool state) {
                          setting = state;
-                         getApp()->windows->forceLayoutChannelViews();
+                         getApp()->getWindows()->forceLayoutChannelViews();
                      });
 
     return checkbox;
@@ -131,22 +132,6 @@ QComboBox *SettingsPage::createComboBox(
                      });
 
     return combo;
-}
-
-QLineEdit *SettingsPage::createLineEdit(
-    pajlada::Settings::Setting<QString> &setting)
-{
-    QLineEdit *edit = new QLineEdit();
-
-    edit->setText(setting);
-
-    // update when setting changes
-    QObject::connect(edit, &QLineEdit::textChanged,
-                     [&setting](const QString &newValue) {
-                         setting = newValue;
-                     });
-
-    return edit;
 }
 
 QSpinBox *SettingsPage::createSpinBox(pajlada::Settings::Setting<int> &setting,

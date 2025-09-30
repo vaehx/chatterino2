@@ -1,6 +1,7 @@
-#include "EditableModelView.hpp"
+#include "widgets/helper/EditableModelView.hpp"
 
 #include "widgets/helper/RegExpItemDelegate.hpp"
+#include "widgets/helper/TableStyles.hpp"
 
 #include <QAbstractItemView>
 #include <QAbstractTableModel>
@@ -20,19 +21,24 @@ EditableModelView::EditableModelView(QAbstractTableModel *model, bool movable)
 {
     this->model_->setParent(this);
     this->tableView_->setModel(model_);
+    // disabling word-wrap somehow prevent '/'-prefixed commands from being elided
+    this->tableView_->setWordWrap(false);
     this->tableView_->setSelectionMode(QAbstractItemView::SingleSelection);
     this->tableView_->setSelectionBehavior(QAbstractItemView::SelectRows);
     this->tableView_->setDragDropMode(QTableView::DragDropMode::InternalMove);
     this->tableView_->setDragDropOverwriteMode(false);
     this->tableView_->setDefaultDropAction(Qt::DropAction::MoveAction);
     this->tableView_->verticalHeader()->setVisible(false);
+    this->tableView_->horizontalHeader()->setSectionsClickable(false);
+
+    TableRowDragStyle::applyTo(this->tableView_);
 
     // create layout
     QVBoxLayout *vbox = new QVBoxLayout(this);
     vbox->setContentsMargins(0, 0, 0, 0);
 
     // create button layout
-    QHBoxLayout *buttons = new QHBoxLayout(this);
+    auto *buttons = new QHBoxLayout();
     this->buttons_ = buttons;
     vbox->addLayout(buttons);
 
@@ -52,12 +58,16 @@ EditableModelView::EditableModelView(QAbstractTableModel *model, bool movable)
         // Remove rows backwards so indices don't shift.
         std::vector<int> rows;
         for (auto &&index : selected)
+        {
             rows.push_back(index.row());
+        }
 
         std::sort(rows.begin(), rows.end(), std::greater{});
 
         for (auto &&row : rows)
+        {
             model_->removeRow(row);
+        }
     });
 
     if (movable)
@@ -134,12 +144,71 @@ void EditableModelView::addCustomButton(QWidget *widget)
 
 void EditableModelView::addRegexHelpLink()
 {
-    auto regexHelpLabel =
+    auto *regexHelpLabel =
         new QLabel("<a href='"
                    "https://chatterino.com/help/regex'>"
                    "<span style='color:#99f'>regex info</span></a>");
     regexHelpLabel->setOpenExternalLinks(true);
     this->addCustomButton(regexHelpLabel);
+}
+
+bool EditableModelView::filterSearchResults(const QString &query,
+                                            std::span<const int> columnSelect)
+{
+    bool searchFoundSomething = false;
+    auto rowAmount = this->model_->rowCount();
+
+    // make sure to show the page even if the table is empty,
+    // but only if we aren't search something
+    if (rowAmount == 0 && query.isEmpty())
+    {
+        return true;
+    }
+
+    for (int i = 0; i < rowAmount; i++)
+    {
+        bool foundMatch = false;
+
+        for (int j : columnSelect)
+        {
+            QModelIndex idx = model_->index(i, j);
+            QVariant a = model_->data(idx);
+            if (a.toString().contains(query, Qt::CaseInsensitive))
+            {
+                foundMatch = true;
+                searchFoundSomething = true;
+                break;
+            }
+        }
+
+        tableView_->setRowHidden(i, !foundMatch);
+    }
+
+    return searchFoundSomething;
+}
+
+void EditableModelView::filterSearchResultsHotkey(
+    const QKeySequence &keySequenceQuery)
+{
+    auto rowAmount = this->model_->rowCount();
+
+    for (int i = 0; i < rowAmount; i++)
+    {
+        QModelIndex idx = model_->index(i, 1);
+        QVariant a = model_->data(idx);
+        auto seq = qvariant_cast<QKeySequence>(a);
+
+        // todo: Make this fuzzy match, right now only exact matches happen
+        // so ctrl+f won't match ctrl+shift+f shortcuts
+        if (keySequenceQuery.matches(seq) != QKeySequence::NoMatch)
+        {
+            tableView_->showRow(i);
+        }
+        else
+        {
+            tableView_->hideRow(i);
+        }
+    }
 }
 
 void EditableModelView::moveRow(int dir)
@@ -151,7 +220,9 @@ void EditableModelView::moveRow(int dir)
         (row = selected.at(0).row()) + dir >=
             this->model_->rowCount(QModelIndex()) ||
         row + dir < 0)
+    {
         return;
+    }
 
     model_->moveRows(model_->index(row, 0), row, selected.size(),
                      model_->index(row + dir, 0), row + dir);

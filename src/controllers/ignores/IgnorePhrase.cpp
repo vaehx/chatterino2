@@ -2,8 +2,7 @@
 
 #include "Application.hpp"
 #include "controllers/accounts/AccountController.hpp"
-#include "providers/twitch/TwitchAccount.hpp"
-#include "singletons/Settings.hpp"
+#include "providers/twitch/TwitchAccount.hpp"  // IWYU pragma: keep
 
 namespace chatterino {
 
@@ -95,11 +94,11 @@ bool IgnorePhrase::containsEmote() const
 {
     if (!this->emotesChecked_)
     {
-        const auto &accvec = getApp()->accounts->twitch.accounts;
-        for (const auto &acc : accvec)
+        auto accemotes =
+            getApp()->getAccounts()->twitch.getCurrent()->accessEmotes();
+        if (*accemotes)
         {
-            const auto &accemotes = *acc->accessEmotes();
-            for (const auto &emote : accemotes.emotes)
+            for (const auto &emote : **accemotes)
             {
                 if (this->replace_.contains(emote.first.string,
                                             Qt::CaseSensitive))
@@ -115,8 +114,9 @@ bool IgnorePhrase::containsEmote() const
 
 IgnorePhrase IgnorePhrase::createEmpty()
 {
-    return IgnorePhrase(QString(), false, false,
-                        getSettings()->ignoredPhraseReplace.getValue(), true);
+    return {
+        {}, false, false, DEFAULT_IGNORE_PHRASE_REPLACE.toString(), true,
+    };
 }
 
 }  // namespace chatterino

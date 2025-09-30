@@ -1,24 +1,33 @@
 #include "providers/bttv/BttvLiveUpdates.hpp"
 
+#include "common/Literals.hpp"
+
 #include <QJsonDocument>
 
 #include <utility>
 
 namespace chatterino {
 
+using namespace chatterino::literals;
+
 BttvLiveUpdates::BttvLiveUpdates(QString host)
-    : BasicPubSubManager(std::move(host))
+    : BasicPubSubManager(std::move(host), u"BTTV"_s)
 {
 }
 
+BttvLiveUpdates::~BttvLiveUpdates()
+{
+    this->stop();
+}
+
 void BttvLiveUpdates::joinChannel(const QString &channelID,
-                                  const QString &userName)
+                                  const QString &userID)
 {
     if (this->joinedChannels_.insert(channelID).second)
     {
         this->subscribe({BttvLiveUpdateSubscriptionChannel{channelID}});
         this->subscribe({BttvLiveUpdateBroadcastMe{.twitchID = channelID,
-                                                   .userName = userName}});
+                                                   .userID = userID}});
     }
 }
 
@@ -82,6 +91,10 @@ void BttvLiveUpdates::onMessage(
         }
 
         this->signals_.emoteRemoved.invoke(message);
+    }
+    else if (eventType == "lookup_user")
+    {
+        // ignored
     }
     else
     {

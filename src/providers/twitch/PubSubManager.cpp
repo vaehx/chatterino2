@@ -1,26 +1,26 @@
 #include "providers/twitch/PubSubManager.hpp"
 
+#include "Application.hpp"
 #include "common/QLogging.hpp"
 #include "providers/NetworkConfigurationProvider.hpp"
-#include "providers/twitch/PubSubActions.hpp"
 #include "providers/twitch/PubSubClient.hpp"
 #include "providers/twitch/PubSubHelpers.hpp"
 #include "providers/twitch/PubSubMessages.hpp"
-#include "providers/twitch/TwitchAccount.hpp"
 #include "util/DebugCount.hpp"
-#include "util/Helpers.hpp"
-#include "util/RapidjsonHelpers.hpp"
+#include "util/RenameThread.hpp"
 
 #include <QJsonArray>
+#include <QScopeGuard>
 
 #include <algorithm>
 #include <exception>
-#include <iostream>
+#include <memory>
 #include <thread>
 
 using websocketpp::lib::bind;
 using websocketpp::lib::placeholders::_1;
 using websocketpp::lib::placeholders::_2;
+using namespace std::chrono_literals;
 
 namespace chatterino {
 
@@ -30,436 +30,6 @@ PubSub::PubSub(const QString &host, std::chrono::seconds pingInterval)
           pingInterval,
       })
 {
-    this->moderationActionHandlers["clear"] = [this](const auto &data,
-                                                     const auto &roomID) {
-        ClearChatAction action(data, roomID);
-
-        this->signals_.moderation.chatCleared.invoke(action);
-    };
-
-    this->moderationActionHandlers["slowoff"] = [this](const auto &data,
-                                                       const auto &roomID) {
-        ModeChangedAction action(data, roomID);
-
-        action.mode = ModeChangedAction::Mode::Slow;
-        action.state = ModeChangedAction::State::Off;
-
-        this->signals_.moderation.modeChanged.invoke(action);
-    };
-
-    this->moderationActionHandlers["slow"] = [this](const auto &data,
-                                                    const auto &roomID) {
-        ModeChangedAction action(data, roomID);
-
-        action.mode = ModeChangedAction::Mode::Slow;
-        action.state = ModeChangedAction::State::On;
-
-        const auto args = data.value("args").toArray();
-
-        if (args.empty())
-        {
-            qCDebug(chatterinoPubSub)
-                << "Missing duration argument in slowmode on";
-            return;
-        }
-
-        bool ok;
-
-        action.duration = args.at(0).toString().toUInt(&ok, 10);
-
-        this->signals_.moderation.modeChanged.invoke(action);
-    };
-
-    this->moderationActionHandlers["r9kbetaoff"] = [this](const auto &data,
-                                                          const auto &roomID) {
-        ModeChangedAction action(data, roomID);
-
-        action.mode = ModeChangedAction::Mode::R9K;
-        action.state = ModeChangedAction::State::Off;
-
-        this->signals_.moderation.modeChanged.invoke(action);
-    };
-
-    this->moderationActionHandlers["r9kbeta"] = [this](const auto &data,
-                                                       const auto &roomID) {
-        ModeChangedAction action(data, roomID);
-
-        action.mode = ModeChangedAction::Mode::R9K;
-        action.state = ModeChangedAction::State::On;
-
-        this->signals_.moderation.modeChanged.invoke(action);
-    };
-
-    this->moderationActionHandlers["subscribersoff"] =
-        [this](const auto &data, const auto &roomID) {
-            ModeChangedAction action(data, roomID);
-
-            action.mode = ModeChangedAction::Mode::SubscribersOnly;
-            action.state = ModeChangedAction::State::Off;
-
-            this->signals_.moderation.modeChanged.invoke(action);
-        };
-
-    this->moderationActionHandlers["subscribers"] = [this](const auto &data,
-                                                           const auto &roomID) {
-        ModeChangedAction action(data, roomID);
-
-        action.mode = ModeChangedAction::Mode::SubscribersOnly;
-        action.state = ModeChangedAction::State::On;
-
-        this->signals_.moderation.modeChanged.invoke(action);
-    };
-
-    this->moderationActionHandlers["emoteonlyoff"] =
-        [this](const auto &data, const auto &roomID) {
-            ModeChangedAction action(data, roomID);
-
-            action.mode = ModeChangedAction::Mode::EmoteOnly;
-            action.state = ModeChangedAction::State::Off;
-
-            this->signals_.moderation.modeChanged.invoke(action);
-        };
-
-    this->moderationActionHandlers["emoteonly"] = [this](const auto &data,
-                                                         const auto &roomID) {
-        ModeChangedAction action(data, roomID);
-
-        action.mode = ModeChangedAction::Mode::EmoteOnly;
-        action.state = ModeChangedAction::State::On;
-
-        this->signals_.moderation.modeChanged.invoke(action);
-    };
-
-    this->moderationActionHandlers["unmod"] = [this](const auto &data,
-                                                     const auto &roomID) {
-        ModerationStateAction action(data, roomID);
-
-        action.target.id = data.value("target_user_id").toString();
-
-        const auto args = data.value("args").toArray();
-
-        if (args.isEmpty())
-        {
-            return;
-        }
-
-        action.target.login = args[0].toString();
-
-        action.modded = false;
-
-        this->signals_.moderation.moderationStateChanged.invoke(action);
-    };
-
-    this->moderationActionHandlers["mod"] = [this](const auto &data,
-                                                   const auto &roomID) {
-        ModerationStateAction action(data, roomID);
-        action.modded = true;
-
-        auto innerType = data.value("type").toString();
-        if (innerType == "chat_login_moderation")
-        {
-            // Don't display the old message type
-            return;
-        }
-
-        action.target.id = data.value("target_user_id").toString();
-        action.target.login = data.value("target_user_login").toString();
-
-        this->signals_.moderation.moderationStateChanged.invoke(action);
-    };
-
-    this->moderationActionHandlers["timeout"] = [this](const auto &data,
-                                                       const auto &roomID) {
-        BanAction action(data, roomID);
-
-        action.source.id = data.value("created_by_user_id").toString();
-        action.source.login = data.value("created_by").toString();
-
-        action.target.id = data.value("target_user_id").toString();
-
-        const auto args = data.value("args").toArray();
-
-        if (args.size() < 2)
-        {
-            return;
-        }
-
-        action.target.login = args[0].toString();
-        bool ok;
-        action.duration = args[1].toString().toUInt(&ok, 10);
-        action.reason = args[2].toString();  // May be omitted
-
-        this->signals_.moderation.userBanned.invoke(action);
-    };
-
-    this->moderationActionHandlers["delete"] = [this](const auto &data,
-                                                      const auto &roomID) {
-        DeleteAction action(data, roomID);
-
-        action.source.id = data.value("created_by_user_id").toString();
-        action.source.login = data.value("created_by").toString();
-
-        action.target.id = data.value("target_user_id").toString();
-
-        const auto args = data.value("args").toArray();
-
-        if (args.size() < 3)
-        {
-            return;
-        }
-
-        action.target.login = args[0].toString();
-        bool ok;
-        action.messageText = args[1].toString();
-        action.messageId = args[2].toString();
-
-        this->signals_.moderation.messageDeleted.invoke(action);
-    };
-
-    this->moderationActionHandlers["ban"] = [this](const auto &data,
-                                                   const auto &roomID) {
-        BanAction action(data, roomID);
-
-        action.source.id = data.value("created_by_user_id").toString();
-        action.source.login = data.value("created_by").toString();
-
-        action.target.id = data.value("target_user_id").toString();
-
-        const auto args = data.value("args").toArray();
-
-        if (args.isEmpty())
-        {
-            return;
-        }
-
-        action.target.login = args[0].toString();
-        action.reason = args[1].toString();  // May be omitted
-
-        this->signals_.moderation.userBanned.invoke(action);
-    };
-
-    this->moderationActionHandlers["unban"] = [this](const auto &data,
-                                                     const auto &roomID) {
-        UnbanAction action(data, roomID);
-
-        action.source.id = data.value("created_by_user_id").toString();
-        action.source.login = data.value("created_by").toString();
-
-        action.target.id = data.value("target_user_id").toString();
-
-        action.previousState = UnbanAction::Banned;
-
-        const auto args = data.value("args").toArray();
-
-        if (args.isEmpty())
-        {
-            return;
-        }
-
-        action.target.login = args[0].toString();
-
-        this->signals_.moderation.userUnbanned.invoke(action);
-    };
-
-    this->moderationActionHandlers["untimeout"] = [this](const auto &data,
-                                                         const auto &roomID) {
-        UnbanAction action(data, roomID);
-
-        action.source.id = data.value("created_by_user_id").toString();
-        action.source.login = data.value("created_by").toString();
-
-        action.target.id = data.value("target_user_id").toString();
-
-        action.previousState = UnbanAction::TimedOut;
-
-        const auto args = data.value("args").toArray();
-
-        if (args.isEmpty())
-        {
-            return;
-        }
-
-        action.target.login = args[0].toString();
-
-        this->signals_.moderation.userUnbanned.invoke(action);
-    };
-
-    /*
-    // This handler is no longer required as we use the automod-queue topic now
-    this->moderationActionHandlers["automod_rejected"] =
-        [this](const auto &data, const auto &roomID) {
-            AutomodAction action(data, roomID);
-
-            action.source.id = data.value("created_by_user_id").toString();
-            action.source.login = data.value("created_by").toString();
-
-            action.target.id = data.value("target_user_id").toString();
-
-            const auto args = data.value("args").toArray();
-
-            if (args.isEmpty())
-            {
-                return;
-            }
-
-            action.msgID = data.value("msg_id").toString();
-
-            if (action.msgID.isEmpty())
-            {
-                // Missing required msg_id parameter
-                return;
-            }
-
-            action.target.login = args[0].toString();
-            action.message = args[1].toString();  // May be omitted
-            action.reason = args[2].toString();   // May be omitted
-
-            this->signals_.moderation.autoModMessageBlocked.invoke(action);
-        };
-    */
-
-    this->moderationActionHandlers["automod_message_rejected"] =
-        [this](const auto &data, const auto &roomID) {
-            AutomodInfoAction action(data, roomID);
-            action.type = AutomodInfoAction::OnHold;
-            this->signals_.moderation.automodInfoMessage.invoke(action);
-        };
-
-    this->moderationActionHandlers["automod_message_denied"] =
-        [this](const auto &data, const auto &roomID) {
-            AutomodInfoAction action(data, roomID);
-            action.type = AutomodInfoAction::Denied;
-            this->signals_.moderation.automodInfoMessage.invoke(action);
-        };
-
-    this->moderationActionHandlers["automod_message_approved"] =
-        [this](const auto &data, const auto &roomID) {
-            AutomodInfoAction action(data, roomID);
-            action.type = AutomodInfoAction::Approved;
-            this->signals_.moderation.automodInfoMessage.invoke(action);
-        };
-
-    this->channelTermsActionHandlers["add_permitted_term"] =
-        [this](const auto &data, const auto &roomID) {
-            // This term got a pass through automod
-            AutomodUserAction action(data, roomID);
-            action.source.id = data.value("created_by_user_id").toString();
-            action.source.login = data.value("created_by").toString();
-
-            action.type = AutomodUserAction::AddPermitted;
-            action.message = data.value("text").toString();
-            action.source.login = data.value("requester_login").toString();
-
-            this->signals_.moderation.automodUserMessage.invoke(action);
-        };
-
-    this->channelTermsActionHandlers["add_blocked_term"] =
-        [this](const auto &data, const auto &roomID) {
-            // A term has been added
-            AutomodUserAction action(data, roomID);
-            action.source.id = data.value("created_by_user_id").toString();
-            action.source.login = data.value("created_by").toString();
-
-            action.type = AutomodUserAction::AddBlocked;
-            action.message = data.value("text").toString();
-            action.source.login = data.value("requester_login").toString();
-
-            this->signals_.moderation.automodUserMessage.invoke(action);
-        };
-
-    this->moderationActionHandlers["delete_permitted_term"] =
-        [this](const auto &data, const auto &roomID) {
-            // This term got deleted
-            AutomodUserAction action(data, roomID);
-            action.source.id = data.value("created_by_user_id").toString();
-            action.source.login = data.value("created_by").toString();
-
-            const auto args = data.value("args").toArray();
-            action.type = AutomodUserAction::RemovePermitted;
-
-            if (args.isEmpty())
-            {
-                return;
-            }
-
-            action.message = args[0].toString();
-
-            this->signals_.moderation.automodUserMessage.invoke(action);
-        };
-
-    this->channelTermsActionHandlers["delete_permitted_term"] =
-        [this](const auto &data, const auto &roomID) {
-            // This term got deleted
-            AutomodUserAction action(data, roomID);
-            action.source.id = data.value("created_by_user_id").toString();
-            action.source.login = data.value("created_by").toString();
-
-            action.type = AutomodUserAction::RemovePermitted;
-            action.message = data.value("text").toString();
-            action.source.login = data.value("requester_login").toString();
-
-            this->signals_.moderation.automodUserMessage.invoke(action);
-        };
-
-    this->moderationActionHandlers["delete_blocked_term"] =
-        [this](const auto &data, const auto &roomID) {
-            // This term got deleted
-            AutomodUserAction action(data, roomID);
-
-            action.source.id = data.value("created_by_user_id").toString();
-            action.source.login = data.value("created_by").toString();
-
-            const auto args = data.value("args").toArray();
-            action.type = AutomodUserAction::RemoveBlocked;
-
-            if (args.isEmpty())
-            {
-                return;
-            }
-
-            action.message = args[0].toString();
-
-            this->signals_.moderation.automodUserMessage.invoke(action);
-        };
-    this->channelTermsActionHandlers["delete_blocked_term"] =
-        [this](const auto &data, const auto &roomID) {
-            // This term got deleted
-            AutomodUserAction action(data, roomID);
-
-            action.source.id = data.value("created_by_user_id").toString();
-            action.source.login = data.value("created_by").toString();
-
-            action.type = AutomodUserAction::RemoveBlocked;
-            action.message = data.value("text").toString();
-            action.source.login = data.value("requester_login").toString();
-
-            this->signals_.moderation.automodUserMessage.invoke(action);
-        };
-
-    // We don't get this one anymore or anything similiar
-    // We need some new topic so we can listen
-    //
-    //this->moderationActionHandlers["modified_automod_properties"] =
-    //    [this](const auto &data, const auto &roomID) {
-    //        // The automod settings got modified
-    //        AutomodUserAction action(data, roomID);
-    //        getCreatedByUser(data, action.source);
-    //        action.type = AutomodUserAction::Properties;
-    //        this->signals_.moderation.automodUserMessage.invoke(action);
-    //    };
-
-    this->moderationActionHandlers["denied_automod_message"] =
-        [](const auto &data, const auto &roomID) {
-            // This message got denied by a moderator
-            // qCDebug(chatterinoPubSub) << rj::stringify(data);
-        };
-
-    this->moderationActionHandlers["approved_automod_message"] =
-        [](const auto &data, const auto &roomID) {
-            // This message got approved by a moderator
-            // qCDebug(chatterinoPubSub) << rj::stringify(data);
-        };
-
     this->websocketClient.set_access_channels(websocketpp::log::alevel::all);
     this->websocketClient.clear_access_channels(
         websocketpp::log::alevel::frame_payload |
@@ -481,16 +51,14 @@ PubSub::PubSub(const QString &host, std::chrono::seconds pingInterval)
         bind(&PubSub::onConnectionFail, this, ::_1));
 }
 
-void PubSub::setAccount(std::shared_ptr<TwitchAccount> account)
+PubSub::~PubSub()
 {
-    this->token_ = account->getOAuthToken();
-    this->userID_ = account->getUserId();
+    this->stop();
 }
 
-void PubSub::setAccountData(QString token, QString userID)
+void PubSub::initialize()
 {
-    this->token_ = token;
-    this->userID_ = userID;
+    this->start();
 }
 
 void PubSub::addClient()
@@ -522,152 +90,60 @@ void PubSub::addClient()
 
 void PubSub::start()
 {
-    this->work = std::make_shared<boost::asio::io_service::work>(
-        this->websocketClient.get_io_service());
-    this->mainThread.reset(
-        new std::thread(std::bind(&PubSub::runThread, this)));
+    this->work = std::make_shared<boost::asio::executor_work_guard<
+        boost::asio::io_context::executor_type>>(
+        this->websocketClient.get_io_service().get_executor());
+    this->thread = std::make_unique<std::thread>([this] {
+        // make sure we set in any case, even exceptions
+        auto guard = qScopeGuard([&] {
+            this->stoppedFlag_.set();
+        });
+
+        runThread();
+    });
+    renameThread(*this->thread, "PubSub");
 }
 
 void PubSub::stop()
 {
     this->stopping_ = true;
 
-    for (const auto &client : this->clients)
+    for (const auto &[hdl, client] : this->clients)
     {
-        client.second->close("Shutting down");
+        (void)hdl;
+
+        client->close("Shutting down");
     }
 
     this->work.reset();
 
-    if (this->mainThread->joinable())
-    {
-        this->mainThread->join();
-    }
-
-    assert(this->clients.empty());
-}
-
-void PubSub::unlistenAllModerationActions()
-{
-    for (const auto &p : this->clients)
-    {
-        const auto &client = p.second;
-        if (const auto &[topics, nonce] =
-                client->unlistenPrefix("chat_moderator_actions.");
-            !topics.empty())
-        {
-            this->registerNonce(nonce, {
-                                           client,
-                                           "UNLISTEN",
-                                           topics,
-                                           topics.size(),
-                                       });
-        }
-    }
-}
-
-void PubSub::unlistenAutomod()
-{
-    for (const auto &p : this->clients)
-    {
-        const auto &client = p.second;
-        if (const auto &[topics, nonce] =
-                client->unlistenPrefix("automod-queue.");
-            !topics.empty())
-        {
-            this->registerNonce(nonce, {
-                                           client,
-                                           "UNLISTEN",
-                                           topics,
-                                           topics.size(),
-                                       });
-        }
-    }
-}
-
-void PubSub::unlistenWhispers()
-{
-    for (const auto &p : this->clients)
-    {
-        const auto &client = p.second;
-        if (const auto &[topics, nonce] = client->unlistenPrefix("whispers.");
-            !topics.empty())
-        {
-            this->registerNonce(nonce, {
-                                           client,
-                                           "UNLISTEN",
-                                           topics,
-                                           topics.size(),
-                                       });
-        }
-    }
-}
-
-bool PubSub::listenToWhispers()
-{
-    if (this->userID_.isEmpty())
-    {
-        qCDebug(chatterinoPubSub)
-            << "Unable to listen to whispers topic, no user logged in";
-        return false;
-    }
-
-    static const QString topicFormat("whispers.%1");
-    auto topic = topicFormat.arg(this->userID_);
-
-    qCDebug(chatterinoPubSub) << "Listen to whispers" << topic;
-
-    this->listenToTopic(topic);
-
-    return true;
-}
-
-void PubSub::listenToChannelModerationActions(const QString &channelID)
-{
-    if (this->userID_.isEmpty())
-    {
-        qCDebug(chatterinoPubSub) << "Unable to listen to moderation actions "
-                                     "topic, no user logged in";
-        return;
-    }
-
-    static const QString topicFormat("chat_moderator_actions.%1.%2");
-    assert(!channelID.isEmpty());
-
-    auto topic = topicFormat.arg(this->userID_, channelID);
-
-    if (this->isListeningToTopic(topic))
+    if (!this->thread->joinable())
     {
         return;
     }
 
-    qCDebug(chatterinoPubSub) << "Listen to topic" << topic;
-
-    this->listenToTopic(topic);
-}
-
-void PubSub::listenToAutomod(const QString &channelID)
-{
-    if (this->userID_.isEmpty())
+    // NOTE:
+    // There is a case where a new client was initiated but not added to the clients list.
+    // We just don't join the thread & let the operating system nuke the thread if joining fails
+    // within 1s.
+    // We could fix the underlying bug, but this is easier & we realistically won't use this exact code
+    // for super much longer.
+    if (this->stoppedFlag_.waitFor(std::chrono::milliseconds{100}))
     {
-        qCDebug(chatterinoPubSub)
-            << "Unable to listen to automod topic, no user logged in";
+        this->thread->join();
         return;
     }
 
-    static const QString topicFormat("automod-queue.%1.%2");
-    assert(!channelID.isEmpty());
-
-    auto topic = topicFormat.arg(this->userID_, channelID);
-
-    if (this->isListeningToTopic(topic))
+    qCWarning(chatterinoLiveupdates)
+        << "Thread didn't finish within 100ms, force-stop the client";
+    this->websocketClient.stop();
+    if (this->stoppedFlag_.waitFor(std::chrono::milliseconds{20}))
     {
+        this->thread->join();
         return;
     }
 
-    qCDebug(chatterinoPubSub) << "Listen to topic" << topic;
-
-    this->listenToTopic(topic);
+    qCWarning(chatterinoLiveupdates) << "Thread didn't finish after stopping";
 }
 
 void PubSub::listenToChannelPointRewards(const QString &channelID)
@@ -684,6 +160,30 @@ void PubSub::listenToChannelPointRewards(const QString &channelID)
     qCDebug(chatterinoPubSub) << "Listen to topic" << topic;
 
     this->listenToTopic(topic);
+}
+
+void PubSub::unlistenChannelPointRewards()
+{
+    this->unlistenPrefix("community-points-channel-v1.");
+}
+
+void PubSub::unlistenPrefix(const QString &prefix)
+{
+    for (const auto &p : this->clients)
+    {
+        const auto &client = p.second;
+        if (const auto &[topics, nonce] = client->unlistenPrefix(prefix);
+            !topics.empty())
+        {
+            NonceInfo nonceInfo{
+                client,
+                "UNLISTEN",
+                topics,
+                topics.size(),
+            };
+            this->registerNonce(nonce, nonceInfo);
+        }
+    }
 }
 
 void PubSub::listen(PubSubListenMessage msg)
@@ -726,14 +226,14 @@ void PubSub::registerNonce(QString nonce, NonceInfo info)
     this->nonces_[nonce] = std::move(info);
 }
 
-boost::optional<PubSub::NonceInfo> PubSub::findNonceInfo(QString nonce)
+std::optional<PubSub::NonceInfo> PubSub::findNonceInfo(QString nonce)
 {
     // TODO: This should also DELETE the nonceinfo from the map
     auto it = this->nonces_.find(nonce);
 
     if (it == this->nonces_.end())
     {
-        return boost::none;
+        return std::nullopt;
     }
 
     return it->second;
@@ -845,7 +345,6 @@ void PubSub::onConnectionOpen(WebsocketHandle hdl)
                          this->requests.begin() + topicsToTake);
 
     PubSubListenMessage msg(newTopics);
-    msg.setToken(this->token_);
 
     if (auto success = client->listen(msg); !success)
     {
@@ -1027,102 +526,7 @@ void PubSub::handleMessageResponse(const PubSubMessageMessage &message)
 {
     QString topic = message.topic;
 
-    if (topic.startsWith("whispers."))
-    {
-        auto oInnerMessage = message.toInner<PubSubWhisperMessage>();
-        if (!oInnerMessage)
-        {
-            return;
-        }
-        auto whisperMessage = *oInnerMessage;
-
-        switch (whisperMessage.type)
-        {
-            case PubSubWhisperMessage::Type::WhisperReceived: {
-                this->signals_.whisper.received.invoke(whisperMessage);
-            }
-            break;
-            case PubSubWhisperMessage::Type::WhisperSent: {
-                this->signals_.whisper.sent.invoke(whisperMessage);
-            }
-            break;
-            case PubSubWhisperMessage::Type::Thread: {
-                // Handle thread?
-            }
-            break;
-
-            case PubSubWhisperMessage::Type::INVALID:
-            default: {
-                qCDebug(chatterinoPubSub)
-                    << "Invalid whisper type:" << whisperMessage.typeString;
-            }
-            break;
-        }
-    }
-    else if (topic.startsWith("chat_moderator_actions."))
-    {
-        auto oInnerMessage =
-            message.toInner<PubSubChatModeratorActionMessage>();
-        if (!oInnerMessage)
-        {
-            return;
-        }
-
-        auto innerMessage = *oInnerMessage;
-        auto topicParts = topic.split(".");
-        assert(topicParts.length() == 3);
-
-        // Channel ID where the moderator actions are coming from
-        auto channelID = topicParts[2];
-
-        switch (innerMessage.type)
-        {
-            case PubSubChatModeratorActionMessage::Type::ModerationAction: {
-                QString moderationAction =
-                    innerMessage.data.value("moderation_action").toString();
-
-                auto handlerIt =
-                    this->moderationActionHandlers.find(moderationAction);
-
-                if (handlerIt == this->moderationActionHandlers.end())
-                {
-                    qCDebug(chatterinoPubSub)
-                        << "No handler found for moderation action"
-                        << moderationAction;
-                    return;
-                }
-                // Invoke handler function
-                handlerIt->second(innerMessage.data, channelID);
-            }
-            break;
-            case PubSubChatModeratorActionMessage::Type::ChannelTermsAction: {
-                QString channelTermsAction =
-                    innerMessage.data.value("type").toString();
-
-                auto handlerIt =
-                    this->channelTermsActionHandlers.find(channelTermsAction);
-
-                if (handlerIt == this->channelTermsActionHandlers.end())
-                {
-                    qCDebug(chatterinoPubSub)
-                        << "No handler found for channel terms action"
-                        << channelTermsAction;
-                    return;
-                }
-                // Invoke handler function
-                handlerIt->second(innerMessage.data, channelID);
-            }
-            break;
-
-            case PubSubChatModeratorActionMessage::Type::INVALID:
-            default: {
-                qCDebug(chatterinoPubSub)
-                    << "Invalid whisper type:" << innerMessage.typeString;
-            }
-            break;
-        }
-    }
-    else if (topic.startsWith("community-points-channel-v1."))
+    if (topic.startsWith("community-points-channel-v1."))
     {
         auto oInnerMessage =
             message.toInner<PubSubCommunityPointsChannelV1Message>();
@@ -1135,10 +539,12 @@ void PubSub::handleMessageResponse(const PubSubMessageMessage &message)
 
         switch (innerMessage.type)
         {
+            case PubSubCommunityPointsChannelV1Message::Type::
+                AutomaticRewardRedeemed:
             case PubSubCommunityPointsChannelV1Message::Type::RewardRedeemed: {
                 auto redemption =
                     innerMessage.data.value("redemption").toObject();
-                this->signals_.pointReward.redeemed.invoke(redemption);
+                this->pointReward.redeemed.invoke(redemption);
             }
             break;
 
@@ -1149,25 +555,6 @@ void PubSub::handleMessageResponse(const PubSubMessageMessage &message)
             }
             break;
         }
-    }
-    else if (topic.startsWith("automod-queue."))
-    {
-        auto oInnerMessage = message.toInner<PubSubAutoModQueueMessage>();
-        if (!oInnerMessage)
-        {
-            return;
-        }
-
-        auto innerMessage = *oInnerMessage;
-
-        auto topicParts = topic.split(".");
-        assert(topicParts.length() == 3);
-
-        // Channel ID where the moderator actions are coming from
-        auto channelID = topicParts[2];
-
-        this->signals_.moderation.autoModMessageCaught.invoke(innerMessage,
-                                                              channelID);
     }
     else
     {
@@ -1185,10 +572,7 @@ void PubSub::runThread()
 
 void PubSub::listenToTopic(const QString &topic)
 {
-    PubSubListenMessage msg({topic});
-    msg.setToken(this->token_);
-
-    this->listen(std::move(msg));
+    this->listen(PubSubListenMessage({topic}));
 }
 
 }  // namespace chatterino

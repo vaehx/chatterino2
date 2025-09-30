@@ -1,7 +1,8 @@
 #pragma once
 
 #include "common/Common.hpp"
-#include "widgets/helper/Button.hpp"
+#include "widgets/buttons/Button.hpp"
+#include "widgets/helper/ChannelView.hpp"
 #include "widgets/Notebook.hpp"
 
 #include <pajlada/settings/setting.hpp>
@@ -11,7 +12,7 @@
 
 namespace chatterino {
 
-#define NOTEBOOK_TAB_HEIGHT 28
+inline constexpr int NOTEBOOK_TAB_HEIGHT = 28;
 
 class SplitContainer;
 
@@ -24,7 +25,7 @@ public:
 
     void updateSize();
 
-    QWidget *page;
+    QWidget *page{};
 
     void setCustomTitle(const QString &title);
     void resetCustomTitle();
@@ -40,49 +41,101 @@ public:
     void setInLastRow(bool value);
     void setTabLocation(NotebookTabLocation location);
 
-    void setLive(bool isLive);
-    void setHighlightState(HighlightState style);
-    void setHighlightsEnabled(const bool &newVal);
-    bool hasHighlightsEnabled() const;
+    /**
+     * @brief Sets the live status of this tab
+     *
+     * Returns true if the live status was changed, false if nothing changed.
+     **/
+    bool setLive(bool isLive);
 
-    void moveAnimated(QPoint pos, bool animated = true);
+    /**
+     * @brief Sets the rerun status of this tab
+     *
+     * Returns true if the rerun status was changed, false if nothing changed.
+     **/
+    bool setRerun(bool isRerun);
+
+    /**
+     * @brief Returns true if any split in this tab is live
+     **/
+    bool isLive() const;
+
+    /**
+     * @brief Sets the highlight state of this tab clearing highlight sources
+     *
+     * Obeys the HighlightsEnabled setting and highlight states hierarchy
+     */
+    void setHighlightState(HighlightState style);
+    /**
+     * @brief Updates the highlight state and highlight sources of this tab
+     *
+     * Obeys the HighlightsEnabled setting and the highlight state hierarchy and tracks the highlight state update sources
+     */
+    void updateHighlightState(HighlightState style,
+                              const ChannelView &channelViewSource);
+    void copyHighlightStateAndSourcesFrom(const NotebookTab *sourceTab);
+    void setHighlightsEnabled(const bool &newVal);
+    void newHighlightSourceAdded(const ChannelView &channelViewSource);
+    bool hasHighlightsEnabled() const;
+    HighlightState highlightState() const;
+
+    void moveAnimated(QPoint targetPos, bool animated = true);
 
     QRect getDesiredRect() const;
-    void hideTabXChanged();
+    void tabSizeChanged();
 
     void growWidth(int width);
-    int normalTabWidth();
+    int normalTabWidth() const;
 
 protected:
-    virtual void themeChangedEvent() override;
+    void themeChangedEvent() override;
 
-    virtual void paintEvent(QPaintEvent *) override;
+    void paintEvent(QPaintEvent *) override;
+    void paintContent(QPainter &painter) override
+    {
+    }
 
-    virtual void mousePressEvent(QMouseEvent *event) override;
-    virtual void mouseReleaseEvent(QMouseEvent *event) override;
-    virtual void mouseDoubleClickEvent(QMouseEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
+    void mouseDoubleClickEvent(QMouseEvent *event) override;
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
     void enterEvent(QEnterEvent *event) override;
 #else
     void enterEvent(QEvent *event) override;
 #endif
-    virtual void leaveEvent(QEvent *) override;
+    void leaveEvent(QEvent *) override;
 
-    virtual void dragEnterEvent(QDragEnterEvent *event) override;
+    void dragEnterEvent(QDragEnterEvent *event) override;
+    void dropEvent(QDropEvent *event) override;
 
-    virtual void mouseMoveEvent(QMouseEvent *event) override;
-    virtual void wheelEvent(QWheelEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
+    void wheelEvent(QWheelEvent *event) override;
+
+    /// This exists as an alias to its base classes update, and is virtual
+    /// to allow for mocking
+    virtual void update();
 
 private:
     void showRenameDialog();
 
-    bool hasXButton();
-    bool shouldDrawXButton();
-    QRect getXRect();
+    bool hasXButton() const;
+    bool shouldDrawXButton() const;
+    QRect getXRect() const;
     void titleUpdated();
 
+    int normalTabWidthForHeight(int height) const;
+
+    bool shouldMessageHighlight(const ChannelView &channelViewSource) const;
+
+    using HighlightSources =
+        std::unordered_map<ChannelView::ChannelViewID, HighlightState>;
+    HighlightSources highlightSources_;
+
+    void removeHighlightStateChangeSources(const HighlightSources &toRemove);
+    void removeHighlightSource(const ChannelView::ChannelViewID &source);
+    void updateHighlightStateDueSourcesChange();
+
     QPropertyAnimation positionChangedAnimation_;
-    bool positionChangedAnimationRunning_ = false;
     QPoint positionAnimationDesiredPoint_;
 
     Notebook *notebook_;
@@ -104,6 +157,7 @@ private:
     QAction *highlightNewMessagesAction_;
 
     bool isLive_{};
+    bool isRerun_{};
 
     int growWidth_ = 0;
 

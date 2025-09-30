@@ -3,11 +3,12 @@
 #include "messages/LimitedQueueSnapshot.hpp"
 
 #include <boost/circular_buffer.hpp>
-#include <boost/optional.hpp>
 
 #include <cassert>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
+#include <utility>
 #include <vector>
 
 namespace chatterino {
@@ -25,14 +26,6 @@ public:
 private:
     /// Property Accessors
     /**
-     * @brief Return the limit of the internal buffer
-     */
-    [[nodiscard]] size_t limit() const
-    {
-        return this->limit_;
-    }
-
-    /**
      * @brief Return the amount of space left in the buffer
      *
      * This does not lock
@@ -43,6 +36,14 @@ private:
     }
 
 public:
+    /**
+     * @brief Return the limit of the queue
+     */
+    [[nodiscard]] size_t limit() const
+    {
+        return this->limit_;
+    }
+
     /**
      * @brief Return true if the buffer is empty
      */
@@ -62,13 +63,13 @@ public:
      * @param[in] index the index of the item to fetch
      * @return the item at the index if it's populated, or none if it's not
      */
-    [[nodiscard]] boost::optional<T> get(size_t index) const
+    [[nodiscard]] std::optional<T> get(size_t index) const
     {
         std::shared_lock lock(this->mutex_);
 
         if (index >= this->buffer_.size())
         {
-            return boost::none;
+            return std::nullopt;
         }
 
         return this->buffer_[index];
@@ -79,13 +80,13 @@ public:
      *
      * @return the item at the front of the queue if it's populated, or none the queue is empty
      */
-    [[nodiscard]] boost::optional<T> first() const
+    [[nodiscard]] std::optional<T> first() const
     {
         std::shared_lock lock(this->mutex_);
 
         if (this->buffer_.empty())
         {
-            return boost::none;
+            return std::nullopt;
         }
 
         return this->buffer_.front();
@@ -96,13 +97,13 @@ public:
      *
      * @return the item at the back of the queue if it's populated, or none the queue is empty
      */
-    [[nodiscard]] boost::optional<T> last() const
+    [[nodiscard]] std::optional<T> last() const
     {
         std::shared_lock lock(this->mutex_);
 
         if (this->buffer_.empty())
         {
-            return boost::none;
+            return std::nullopt;
         }
 
         return this->buffer_.back();
@@ -196,12 +197,12 @@ public:
         std::unique_lock lock(this->mutex_);
 
         Equals eq;
-        for (int i = 0; i < this->buffer_.size(); ++i)
+        for (size_t i = 0; i < this->buffer_.size(); ++i)
         {
             if (eq(this->buffer_[i], needle))
             {
                 this->buffer_[i] = replacement;
-                return i;
+                return static_cast<int>(i);
             }
         }
         return -1;
@@ -212,9 +213,10 @@ public:
      *
      * @param[in] index the index of the item to replace
      * @param[in] replacement the item to put in place of the item at index
+     * @param[out] prev (optional) the item located at @a index before replacing
      * @return true if a replacement took place
      */
-    bool replaceItem(size_t index, const T &replacement)
+    bool replaceItem(size_t index, const T &replacement, T *prev = nullptr)
     {
         std::unique_lock lock(this->mutex_);
 
@@ -223,8 +225,44 @@ public:
             return false;
         }
 
-        this->buffer_[index] = replacement;
+        if (prev)
+        {
+            *prev = std::exchange(this->buffer_[index], replacement);
+        }
+        else
+        {
+            this->buffer_[index] = replacement;
+        }
         return true;
+    }
+
+    /**
+     * @brief Replace the needle with the given item
+     *
+     * @param hint A hint on where the needle _might_ be
+     * @param[in] needle the item to search for
+     * @param[in] replacement the item to replace needle with
+     * @return the index of the replaced item, or -1 if no replacement took place
+     */
+    int replaceItem(size_t hint, const T &needle, const T &replacement)
+    {
+        std::unique_lock lock(this->mutex_);
+
+        if (hint < this->buffer_.size() && this->buffer_[hint] == needle)
+        {
+            this->buffer_[hint] = replacement;
+            return static_cast<int>(hint);
+        }
+
+        for (size_t i = 0; i < this->buffer_.size(); ++i)
+        {
+            if (this->buffer_[i] == needle)
+            {
+                this->buffer_[i] = replacement;
+                return static_cast<int>(i);
+            }
+        }
+        return -1;
     }
 
     /**
@@ -293,14 +331,14 @@ public:
      * 
      * The contents of the LimitedQueue are iterated over from front to back 
      * until the first element that satisfies `pred(item)`. If no item 
-     * satisfies the predicate, or if the queue is empty, then boost::none
+     * satisfies the predicate, or if the queue is empty, then std::nullopt
      * is returned.
      * 
      * @param[in] pred predicate that will be applied to items
-     * @return the first item found or boost::none
+     * @return the first item found or std::nullopt
      */
     template <typename Predicate>
-    [[nodiscard]] boost::optional<T> find(Predicate pred) const
+    [[nodiscard]] std::optional<T> find(Predicate pred) const
     {
         std::shared_lock lock(this->mutex_);
 
@@ -312,7 +350,33 @@ public:
             }
         }
 
-        return boost::none;
+        return std::nullopt;
+    }
+
+    /**
+     * @brief Find an item with a hint
+     *
+     * @param hint A hint on where the needle _might_ be
+     * @param predicate that will used to find the item
+     * @return the item and its index or none if it's not found
+     */
+    std::optional<std::pair<size_t, T>> find(size_t hint, auto &&predicate)
+    {
+        std::unique_lock lock(this->mutex_);
+
+        if (hint < this->buffer_.size() && predicate(this->buffer_[hint]))
+        {
+            return std::pair{hint, this->buffer_[hint]};
+        };
+
+        for (size_t i = 0; i < this->buffer_.size(); i++)
+        {
+            if (predicate(this->buffer_[i]))
+            {
+                return std::pair{i, this->buffer_[i]};
+            }
+        }
+        return std::nullopt;
     }
 
     /**
@@ -320,14 +384,14 @@ public:
      * 
      * The contents of the LimitedQueue are iterated over from back to front 
      * until the first element that satisfies `pred(item)`. If no item 
-     * satisfies the predicate, or if the queue is empty, then boost::none
+     * satisfies the predicate, or if the queue is empty, then std::nullopt
      * is returned.
      * 
      * @param[in] pred predicate that will be applied to items
-     * @return the first item found or boost::none
+     * @return the first item found or std::nullopt
      */
     template <typename Predicate>
-    [[nodiscard]] boost::optional<T> rfind(Predicate pred) const
+    [[nodiscard]] std::optional<T> rfind(Predicate pred) const
     {
         std::shared_lock lock(this->mutex_);
 
@@ -339,7 +403,7 @@ public:
             }
         }
 
-        return boost::none;
+        return std::nullopt;
     }
 
 private:

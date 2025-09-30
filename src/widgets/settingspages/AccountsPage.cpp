@@ -1,4 +1,4 @@
-#include "AccountsPage.hpp"
+#include "widgets/settingspages/AccountsPage.hpp"
 
 #include "Application.hpp"
 #include "controllers/accounts/AccountController.hpp"
@@ -26,14 +26,15 @@ AccountsPage::AccountsPage()
 
     EditableModelView *view =
         layout
-            .emplace<EditableModelView>(app->accounts->createModel(nullptr),
-                                        false)
+            .emplace<EditableModelView>(
+                app->getAccounts()->createModel(nullptr), false)
             .getElement();
 
     view->getTableView()->horizontalHeader()->setVisible(false);
     view->getTableView()->horizontalHeader()->setStretchLastSection(true);
 
-    view->addButtonPressed.connect([this] {
+    // We can safely ignore this signal connection since we own the view
+    std::ignore = view->addButtonPressed.connect([this] {
         LoginDialog d(this);
         d.exec();
     });
@@ -62,7 +63,7 @@ AccountsPage::AccountsPage()
     //            return;
     //        }
 
-    //        getApp()->accounts->Twitch.removeUser(selectedUser);
+    //        getApp()->getAccounts()->Twitch.removeUser(selectedUser);
     //    });
 }
 

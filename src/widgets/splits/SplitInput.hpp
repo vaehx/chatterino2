@@ -1,12 +1,14 @@
 #pragma once
 
-#include "util/QObjectRef.hpp"
+#include "messages/Message.hpp"
 #include "widgets/BaseWidget.hpp"
 
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPaintEvent>
+#include <QPointer>
+#include <QPropertyAnimation>
 #include <QTextEdit>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -18,23 +20,12 @@ namespace chatterino {
 class Split;
 class EmotePopup;
 class InputCompletionPopup;
-class EffectLabel;
-class MessageThread;
+class MessageView;
+class LabelButton;
 class ResizingTextEdit;
 class ChannelView;
-
-// MessageOverflow is used for controlling how to guide the user into not
-// sending a message that will be discarded by Twitch
-enum MessageOverflow {
-    // Allow overflowing characters to be inserted into the input box, but highlight them in red
-    Highlight,
-
-    // Prevent more characters from being inserted into the input box
-    Prevent,
-
-    // Do nothing
-    Allow,
-};
+class SvgButton;
+enum class CompletionKind;
 
 class SplitInput : public BaseWidget
 {
@@ -52,8 +43,7 @@ public:
     QString getInputText() const;
     void insertText(const QString &text);
 
-    void setReply(std::shared_ptr<MessageThread> reply,
-                  bool showInlineReplying = true);
+    void setReply(MessagePtr target);
     void setPlaceholderText(const QString &text);
 
     /**
@@ -79,6 +69,15 @@ public:
      **/
     bool isHidden() const;
 
+    /**
+     * @brief Sets the text of this input
+     *
+     * This method should only be used in tests
+     */
+    void setInputText(const QString &newInputText);
+
+    void triggerSelfMessageReceived();
+
     pajlada::Signals::Signal<const QString &> textChanged;
     pajlada::Signals::NoArgSignal selectionChanged;
 
@@ -93,26 +92,29 @@ protected:
 
     virtual void giveFocus(Qt::FocusReason reason);
 
-    QString handleSendMessage(std::vector<QString> &arguments);
+    QString handleSendMessage(const std::vector<QString> &arguments);
     void postMessageSend(const QString &message,
                          const std::vector<QString> &arguments);
 
-    /// Clears the input box, clears reply thread if inline replies are enabled
+    /// Clears the input box, clears reply target if inline replies are enabled
     void clearInput();
 
-protected:
     void addShortcuts() override;
     void initLayout();
     bool eventFilter(QObject *obj, QEvent *event) override;
+#ifdef DEBUG
+    bool keyPressedEventInstalled{};
+#endif
     void installKeyPressedEvent();
     void onCursorPositionChanged();
     void onTextChanged();
     void updateEmoteButton();
     void updateCompletionPopup();
-    void showCompletionPopup(const QString &text, bool emoteCompletion);
+    void showCompletionPopup(const QString &text, CompletionKind kind);
     void hideCompletionPopup();
     void insertCompletionText(const QString &input_) const;
     void openEmotePopup();
+    void clearReplyTarget();
 
     void updateCancelReplyButton();
 
@@ -124,26 +126,39 @@ protected:
     // the user's setting is set to Prevent, and the given text goes beyond the Twitch message length limit
     bool shouldPreventInput(const QString &text) const;
 
+    int marginForTheme() const;
+
+    void applyOuterMargin();
+
+    int replyMessageWidth() const;
+
     Split *const split_;
     ChannelView *const channelView_;
-    QObjectRef<EmotePopup> emotePopup_;
-    QObjectRef<InputCompletionPopup> inputCompletionPopup_;
+    QPointer<EmotePopup> emotePopup_;
+    QPointer<InputCompletionPopup> inputCompletionPopup_;
 
     struct {
-        ResizingTextEdit *textEdit;
-        QLabel *textEditLength;
-        EffectLabel *emoteButton;
-
-        QHBoxLayout *hbox;
+        // vbox for all components
         QVBoxLayout *vbox;
 
+        // reply widgets
         QWidget *replyWrapper;
+        QVBoxLayout *replyVbox;
         QHBoxLayout *replyHbox;
+        MessageView *replyMessage;
         QLabel *replyLabel;
-        EffectLabel *cancelReplyButton;
+        SvgButton *cancelReplyButton;
+
+        // input widgets
+        QWidget *inputWrapper;
+        QHBoxLayout *inputHbox;
+        ResizingTextEdit *textEdit;
+        QLabel *textEditLength;
+        LabelButton *sendButton;
+        SvgButton *emoteButton;
     } ui_;
 
-    std::shared_ptr<MessageThread> replyThread_ = nullptr;
+    MessagePtr replyTarget_ = nullptr;
     bool enableInlineReplying_;
 
     pajlada::Signals::SignalHolder managedConnections_;
@@ -157,7 +172,23 @@ protected:
     // set the height of the split input to 0 if we're supposed to be hidden instead
     bool hidden{false};
 
-private slots:
+    /// Updates the text edit palette using the current theme
+    /// and current "backgroundColor" property
+    void updateTextEditPalette();
+
+    // the background color defines the current background color of this split input
+    // instead of reading straight from the theme, we store a property here
+    // to be used by a property to be able to pulse a highlight color on demand
+    Q_PROPERTY(
+        QColor backgroundColor READ backgroundColor WRITE setBackgroundColor);
+
+    QColor backgroundColor_{"#000000"};
+    QColor backgroundColor() const;
+    void setBackgroundColor(QColor newColor);
+
+    QPropertyAnimation backgroundColorAnimation;
+
+private Q_SLOTS:
     void editTextChanged();
 
     friend class Split;

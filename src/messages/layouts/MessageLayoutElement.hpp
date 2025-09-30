@@ -3,7 +3,6 @@
 #include "common/FlagsEnum.hpp"
 #include "messages/Link.hpp"
 
-#include <boost/noncopyable.hpp>
 #include <pajlada/signals/signalholder.hpp>
 #include <QPen>
 #include <QPoint>
@@ -21,76 +20,127 @@ class Image;
 using ImagePtr = std::shared_ptr<Image>;
 enum class FontStyle : uint8_t;
 enum class MessageElementFlag : int64_t;
+struct MessageColors;
 
-class MessageLayoutElement : boost::noncopyable
+class MessageLayoutElement
 {
 public:
-    MessageLayoutElement(MessageElement &creator_, const QSize &size);
+    MessageLayoutElement(MessageElement &creator_, QSizeF size);
     virtual ~MessageLayoutElement();
+
+    MessageLayoutElement(const MessageLayoutElement &) = delete;
+    MessageLayoutElement &operator=(const MessageLayoutElement &) = delete;
+
+    MessageLayoutElement(MessageLayoutElement &&) = delete;
+    MessageLayoutElement &operator=(MessageLayoutElement &&) = delete;
 
     bool reversedNeutral = false;
 
-    const QRect &getRect() const;
+    const QRectF &getRect() const;
     MessageElement &getCreator() const;
-    void setPosition(QPoint point);
+    void setPosition(QPointF point);
     bool hasTrailingSpace() const;
-    int getLine() const;
-    void setLine(int line);
+    size_t getLine() const;
+    void setLine(size_t line);
 
     MessageLayoutElement *setTrailingSpace(bool value);
-    MessageLayoutElement *setLink(const Link &link_);
+
+    /// @brief Overwrites the link for this layout element
+    ///
+    /// @sa #getLink()
+    MessageLayoutElement *setLink(const Link &link);
+
     MessageLayoutElement *setText(const QString &text_);
 
     virtual void addCopyTextToString(QString &str, uint32_t from = 0,
                                      uint32_t to = UINT32_MAX) const = 0;
-    virtual int getSelectionIndexCount() const = 0;
-    virtual void paint(QPainter &painter) = 0;
-    virtual void paintAnimated(QPainter &painter, int yOffset) = 0;
-    virtual int getMouseOverIndex(const QPoint &abs) const = 0;
-    virtual int getXFromIndex(int index) = 0;
+    virtual size_t getSelectionIndexCount() const = 0;
+    virtual void paint(QPainter &painter,
+                       const MessageColors &messageColors) = 0;
+    /// @returns true if anything was painted
+    virtual bool paintAnimated(QPainter &painter, qreal yOffset) = 0;
+    virtual int getMouseOverIndex(QPointF abs) const = 0;
+    virtual qreal getXFromIndex(size_t index) = 0;
 
-    const Link &getLink() const;
+    /// @brief Returns the link this layout element has
+    ///
+    /// If there isn't any, an empty link is returned (type: None).
+    /// The link is sourced from the creator, but can be overwritten with
+    /// #setLink().
+    Link getLink() const;
     const QString &getText() const;
     FlagsEnum<MessageElementFlag> getFlags() const;
+
+    int getWordId() const;
+    void setWordId(int wordId);
 
 protected:
     bool trailingSpace = true;
 
 private:
     QString text_;
-    QRect rect_;
-    Link link_;
+    QRectF rect_;
+    std::optional<Link> link_;
     MessageElement &creator_;
-    int line_{};
+    /**
+     * The line of the container this element is laid out at
+     */
+    size_t line_{};
+
+    /// @brief ID of a word inside its container
+    ///
+    /// One word has exactly one ID that is used to identify elements created
+    /// from the same word (due to wrapping).
+    /// IDs are unique in a MessageLayoutContainer.
+    int wordId_ = -1;
 };
 
 // IMAGE
 class ImageLayoutElement : public MessageLayoutElement
 {
 public:
-    ImageLayoutElement(MessageElement &creator, ImagePtr image,
-                       const QSize &size);
+    ImageLayoutElement(MessageElement &creator, ImagePtr image, QSizeF size);
 
 protected:
     void addCopyTextToString(QString &str, uint32_t from = 0,
                              uint32_t to = UINT32_MAX) const override;
-    int getSelectionIndexCount() const override;
-    void paint(QPainter &painter) override;
-    void paintAnimated(QPainter &painter, int yOffset) override;
-    int getMouseOverIndex(const QPoint &abs) const override;
-    int getXFromIndex(int index) override;
+    size_t getSelectionIndexCount() const override;
+    void paint(QPainter &painter, const MessageColors &messageColors) override;
+    bool paintAnimated(QPainter &painter, qreal yOffset) override;
+    int getMouseOverIndex(QPointF abs) const override;
+    qreal getXFromIndex(size_t index) override;
 
     ImagePtr image_;
+};
+
+class LayeredImageLayoutElement : public MessageLayoutElement
+{
+public:
+    LayeredImageLayoutElement(MessageElement &creator,
+                              std::vector<ImagePtr> images,
+                              std::vector<QSizeF> sizes, QSizeF largestSize);
+
+protected:
+    void addCopyTextToString(QString &str, uint32_t from = 0,
+                             uint32_t to = UINT32_MAX) const override;
+    size_t getSelectionIndexCount() const override;
+    void paint(QPainter &painter, const MessageColors &messageColors) override;
+    bool paintAnimated(QPainter &painter, qreal yOffset) override;
+    int getMouseOverIndex(QPointF abs) const override;
+    qreal getXFromIndex(size_t index) override;
+
+    std::vector<ImagePtr> images_;
+    std::vector<QSizeF> sizes_;
 };
 
 class ImageWithBackgroundLayoutElement : public ImageLayoutElement
 {
 public:
     ImageWithBackgroundLayoutElement(MessageElement &creator, ImagePtr image,
-                                     const QSize &size, QColor color);
+                                     QSizeF size, QColor color);
 
 protected:
-    void paint(QPainter &painter) override;
+    void paint(QPainter &painter, const MessageColors &messageColors) override;
 
 private:
     QColor color_;
@@ -105,7 +155,7 @@ public:
                                            int padding);
 
 protected:
-    void paint(QPainter &painter) override;
+    void paint(QPainter &painter, const MessageColors &messageColors) override;
 
 private:
     const QColor color_;
@@ -117,26 +167,21 @@ private:
 class TextLayoutElement : public MessageLayoutElement
 {
 public:
-    TextLayoutElement(MessageElement &creator_, QString &text,
-                      const QSize &size, QColor color_, FontStyle style_,
-                      float scale_);
-
-    void listenToLinkChanges();
+    TextLayoutElement(MessageElement &creator_, QString &text, QSizeF size,
+                      QColor color_, FontStyle style_, float scale_);
 
 protected:
     void addCopyTextToString(QString &str, uint32_t from = 0,
                              uint32_t to = UINT32_MAX) const override;
-    int getSelectionIndexCount() const override;
-    void paint(QPainter &painter) override;
-    void paintAnimated(QPainter &painter, int yOffset) override;
-    int getMouseOverIndex(const QPoint &abs) const override;
-    int getXFromIndex(int index) override;
+    size_t getSelectionIndexCount() const override;
+    void paint(QPainter &painter, const MessageColors &messageColors) override;
+    bool paintAnimated(QPainter &painter, qreal yOffset) override;
+    int getMouseOverIndex(QPointF abs) const override;
+    qreal getXFromIndex(size_t index) override;
 
     QColor color_;
     FontStyle style_;
     float scale_;
-
-    pajlada::Signals::SignalHolder managedConnections_;
 };
 
 // TEXT ICON
@@ -145,16 +190,16 @@ class TextIconLayoutElement : public MessageLayoutElement
 {
 public:
     TextIconLayoutElement(MessageElement &creator_, const QString &line1,
-                          const QString &line2, float scale, const QSize &size);
+                          const QString &line2, float scale, QSizeF size);
 
 protected:
     void addCopyTextToString(QString &str, uint32_t from = 0,
                              uint32_t to = UINT32_MAX) const override;
-    int getSelectionIndexCount() const override;
-    void paint(QPainter &painter) override;
-    void paintAnimated(QPainter &painter, int yOffset) override;
-    int getMouseOverIndex(const QPoint &abs) const override;
-    int getXFromIndex(int index) override;
+    size_t getSelectionIndexCount() const override;
+    void paint(QPainter &painter, const MessageColors &messageColors) override;
+    bool paintAnimated(QPainter &painter, qreal yOffset) override;
+    int getMouseOverIndex(QPointF abs) const override;
+    qreal getXFromIndex(size_t index) override;
 
 private:
     float scale;
@@ -165,17 +210,17 @@ private:
 class ReplyCurveLayoutElement : public MessageLayoutElement
 {
 public:
-    ReplyCurveLayoutElement(MessageElement &creator, int width, float thickness,
-                            float radius, float neededMargin);
+    ReplyCurveLayoutElement(MessageElement &creator, qreal width,
+                            float thickness, float radius, float neededMargin);
 
 protected:
-    void paint(QPainter &painter) override;
-    void paintAnimated(QPainter &painter, int yOffset) override;
-    int getMouseOverIndex(const QPoint &abs) const override;
-    int getXFromIndex(int index) override;
+    void paint(QPainter &painter, const MessageColors &messageColors) override;
+    bool paintAnimated(QPainter &painter, qreal yOffset) override;
+    int getMouseOverIndex(QPointF abs) const override;
+    qreal getXFromIndex(size_t index) override;
     void addCopyTextToString(QString &str, uint32_t from = 0,
                              uint32_t to = UINT32_MAX) const override;
-    int getSelectionIndexCount() const override;
+    size_t getSelectionIndexCount() const override;
 
 private:
     const QPen pen_;

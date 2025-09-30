@@ -1,10 +1,10 @@
 #pragma once
 
-#include "common/FlagsEnum.hpp"
-#include "common/Singleton.hpp"
 #include "common/UniqueAccess.hpp"
+#include "messages/MessageFlag.hpp"
+#include "singletons/Settings.hpp"
 
-#include <boost/optional.hpp>
+#include <boost/signals2/connection.hpp>
 #include <pajlada/settings.hpp>
 #include <pajlada/settings/settinglistener.hpp>
 #include <QColor>
@@ -12,18 +12,18 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <utility>
 
 namespace chatterino {
 
 class Badge;
 struct MessageParseArgs;
-enum class MessageFlag : int64_t;
-using MessageFlags = FlagsEnum<MessageFlag>;
+class AccountController;
 
 struct HighlightResult {
     HighlightResult(bool _alert, bool _playSound,
-                    boost::optional<QUrl> _customSoundUrl,
+                    std::optional<QUrl> _customSoundUrl,
                     std::shared_ptr<QColor> _color, bool _showInMentions);
 
     /**
@@ -46,7 +46,7 @@ struct HighlightResult {
      *
      * May only be set if playSound is true
      **/
-    boost::optional<QUrl> customSoundUrl{};
+    std::optional<QUrl> customSoundUrl{};
 
     /**
      * @brief set if highlight should set a background color
@@ -76,17 +76,17 @@ struct HighlightResult {
 };
 
 struct HighlightCheck {
-    using Checker = std::function<boost::optional<HighlightResult>(
+    using Checker = std::function<std::optional<HighlightResult>(
         const MessageParseArgs &args, const std::vector<Badge> &badges,
         const QString &senderName, const QString &originalMessage,
         const MessageFlags &messageFlags, bool self)>;
     Checker cb;
 };
 
-class HighlightController final : public Singleton
+class HighlightController final
 {
 public:
-    void initialize(Settings &settings, Paths &paths) override;
+    HighlightController(Settings &settings, AccountController *accounts);
 
     /**
      * @brief Checks the given message parameters if it matches our internal checks, and returns a result
@@ -108,6 +108,7 @@ private:
 
     pajlada::SettingListener rebuildListener_;
     pajlada::Signals::SignalHolder signalHolder_;
+    std::vector<boost::signals2::scoped_connection> bConnections;
 };
 
 }  // namespace chatterino
